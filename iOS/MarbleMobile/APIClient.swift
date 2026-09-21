@@ -21,13 +21,13 @@ final class APIClient {
 
     func login(username: String, password: String) async throws -> AuthenticatedSession {
         let body: [String: String] = ["username": username, "password": password]
-        let (data, response) = try await request(path: "/auth/login", method: "POST", json: body)
-        guard response.statusCode == 200 else {
-            if response.statusCode == 401 { throw APIError(message: "아이디 또는 비밀번호가 올바르지 않습니다.") }
-            if response.statusCode == 422 { throw APIError(message: "입력값을 확인해 주세요.") }
-            throw APIError(message: "서버 오류가 발생했습니다. (\(response.statusCode))")
+        let (loginData, loginResponse) = try await request(path: "/auth/login", method: "POST", json: body)
+        guard loginResponse.statusCode == 200 else {
+            if loginResponse.statusCode == 401 { throw APIError(message: "아이디 또는 비밀번호가 올바르지 않습니다.") }
+            if loginResponse.statusCode == 422 { throw APIError(message: "입력값을 확인해 주세요.") }
+            throw APIError(message: "서버 오류가 발생했습니다. (\(loginResponse.statusCode))")
         }
-        let token = try JSONDecoder().decode(TokenResponse.self, from: data)
+        let token = try JSONDecoder().decode(TokenResponse.self, from: loginData)
         guard !token.accessToken.isEmpty, !token.refreshToken.isEmpty else {
             throw APIError(message: "서버 응답에 인증 토큰이 없습니다.")
         }
