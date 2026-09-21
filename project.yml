@@ -1,0 +1,31 @@
+name: MarbleMobile
+options:
+  bundleIdPrefix: com.example.marble
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    SWIFT_VERSION: 5.0
+    DEVELOPMENT_TEAM: ""
+targets:
+  MarbleMobileCore:
+    type: framework
+    platform: iOS
+    sources:
+      - Sources/MarbleMobileCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.marble.core
+        SKIP_INSTALL: YES
+  MarbleMobile:
+    type: application
+    platform: iOS
+    sources:
+      - iOS/MarbleMobile
+    dependencies:
+      - target: MarbleMobileCore
+    info:
+      path: iOS/MarbleMobile/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.marble.mobile
+        PRODUCT_NAME: MarbleMobile
