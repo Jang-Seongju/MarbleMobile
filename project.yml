@@ -16,6 +16,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.marble.core
         SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
   MarbleMobile:
     type: application
     platform: iOS
