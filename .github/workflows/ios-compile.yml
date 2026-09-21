@@ -1,20 +1,30 @@
 name: iOS compile check
+
 on:
   workflow_dispatch:
   push:
     paths:
       - 'iOS/**'
       - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
       - 'project.yml'
       - '.github/workflows/ios-compile.yml'
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Run MarbleMobileCore tests
+        run: swift test
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
       - name: Generate project
         run: xcodegen generate
+
       - name: Build for simulator without signing
         run: xcodebuild -project MarbleMobile.xcodeproj -scheme MarbleMobile -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
