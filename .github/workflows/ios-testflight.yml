@@ -98,6 +98,40 @@ jobs:
             -archivePath "$RUNNER_TEMP/MarbleMobile.xcarchive" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             archive
+      - name: Verify archived app bundle
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$RUNNER_TEMP/MarbleMobile.xcarchive/Products/Applications/MarbleMobile.app"
+          INFO_PLIST="$APP_PATH/Info.plist"
+
+          test -d "$APP_PATH"
+          test -f "$INFO_PLIST"
+
+          ACTUAL_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")
+          EXECUTABLE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")
+          SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
+          BUILD_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")
+          LAUNCH_STORYBOARD=$(/usr/libexec/PlistBuddy -c 'Print :UILaunchStoryboardName' "$INFO_PLIST")
+
+          echo "Bundle ID: $ACTUAL_BUNDLE_ID"
+          echo "Executable: $EXECUTABLE_NAME"
+          echo "Version: $SHORT_VERSION ($BUILD_VERSION)"
+          echo "Launch storyboard: $LAUNCH_STORYBOARD"
+
+          test "$ACTUAL_BUNDLE_ID" = "$BUNDLE_ID"
+          test -n "$EXECUTABLE_NAME"
+          test -f "$APP_PATH/$EXECUTABLE_NAME"
+          test -x "$APP_PATH/$EXECUTABLE_NAME"
+          test "$LAUNCH_STORYBOARD" = "LaunchScreen"
+          test -d "$APP_PATH/LaunchScreen.storyboardc"
+          test -f "$APP_PATH/Assets.car"
+
+          /usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations' "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations~ipad' "$INFO_PLIST"
+          ls -l "$APP_PATH/$EXECUTABLE_NAME"
+          find "$APP_PATH" -maxdepth 2 \( -name 'AppIcon*' -o -name 'LaunchScreen.storyboardc' \) -print
+
       - name: Create export options
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
