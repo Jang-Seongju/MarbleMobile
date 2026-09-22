@@ -26,10 +26,10 @@ targets:
       - iOS/MarbleMobile
     dependencies:
       - target: MarbleMobileCore
-    info:
-      path: iOS/MarbleMobile/Info.plist
     settings:
       base:
+        INFOPLIST_FILE: iOS/MarbleMobile/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
         PRODUCT_BUNDLE_IDENTIFIER: com.jsj.marble.mobile
         PRODUCT_NAME: MarbleMobile
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
