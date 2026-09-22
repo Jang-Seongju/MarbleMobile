@@ -1,0 +1,116 @@
+{
+  "images": [
+    {
+      "idiom": "iphone",
+      "size": "20x20",
+      "scale": "2x",
+      "filename": "AppIcon-1-40.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "20x20",
+      "scale": "3x",
+      "filename": "AppIcon-2-60.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "29x29",
+      "scale": "2x",
+      "filename": "AppIcon-3-58.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "29x29",
+      "scale": "3x",
+      "filename": "AppIcon-4-87.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "40x40",
+      "scale": "2x",
+      "filename": "AppIcon-5-80.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "40x40",
+      "scale": "3x",
+      "filename": "AppIcon-6-120.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "60x60",
+      "scale": "2x",
+      "filename": "AppIcon-7-120.png"
+    },
+    {
+      "idiom": "iphone",
+      "size": "60x60",
+      "scale": "3x",
+      "filename": "AppIcon-8-180.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "20x20",
+      "scale": "1x",
+      "filename": "AppIcon-9-20.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "20x20",
+      "scale": "2x",
+      "filename": "AppIcon-10-40.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "29x29",
+      "scale": "1x",
+      "filename": "AppIcon-11-29.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "29x29",
+      "scale": "2x",
+      "filename": "AppIcon-12-58.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "40x40",
+      "scale": "1x",
+      "filename": "AppIcon-13-40.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "40x40",
+      "scale": "2x",
+      "filename": "AppIcon-14-80.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "76x76",
+      "scale": "1x",
+      "filename": "AppIcon-15-76.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "76x76",
+      "scale": "2x",
+      "filename": "AppIcon-16-152.png"
+    },
+    {
+      "idiom": "ipad",
+      "size": "83.5x83.5",
+      "scale": "2x",
+      "filename": "AppIcon-17-167.png"
+    },
+    {
+      "idiom": "ios-marketing",
+      "size": "1024x1024",
+      "scale": "1x",
+      "filename": "AppIcon-18-1024.png"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}
