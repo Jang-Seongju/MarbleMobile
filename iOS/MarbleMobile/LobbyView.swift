@@ -65,10 +65,14 @@ struct LobbyView: View {
             )) {
                 NavigationStack {
                     ScrollView {
-                        Text(model.profileText ?? "")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                            .textSelection(.enabled)
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(informationLines.indices, id: \.self) { index in
+                                Text(informationLines[index])
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .padding()
                     }
                     .navigationTitle("정보")
                     .toolbar {
@@ -79,6 +83,11 @@ struct LobbyView: View {
                 }
             }
         }
+    }
+
+    private var informationLines: [String] {
+        guard let text = model.profileText else { return [] }
+        return text.split(whereSeparator: \.isNewline).map(String.init)
     }
 
     private var statusText: String {
