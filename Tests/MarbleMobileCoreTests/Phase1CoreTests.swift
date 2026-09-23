@@ -213,6 +213,18 @@ extension Phase1CoreTests {
         XCTAssertThrowsError(try RoomCreationRequest(title: "방", maxPlayers: 4, isPrivate: true, password: "   "))
     }
 
+    func testJoinRoomWireMessageMatchesPCProtocol() {
+        XCTAssertEqual(
+            WireMessages.joinRoom(roomID: 7) as NSDictionary,
+            ["type": "join_room", "room_id": 7] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.joinRoom(roomID: 8, password: "  secret  ") as NSDictionary,
+            ["type": "join_room", "room_id": 8, "password": "secret"] as NSDictionary
+        )
+        XCTAssertNil(WireMessages.joinRoom(roomID: 9, password: "   ")["password"])
+    }
+
     func testCreateRoomWireMessageMatchesPCProtocol() throws {
         let request = try RoomCreationRequest(
             title: "친선전", maxPlayers: 3, isPrivate: true, password: "pw"
@@ -267,5 +279,144 @@ extension Phase1CoreTests {
         )
         XCTAssertEqual(actions.map(\.title), ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"])
         XCTAssertEqual(actions.map(\.isEnabled), [true, false, false, false, true])
+    }
+}
+
+extension Phase1CoreTests {
+    func testGameRoomWireMessagesMatchPCProtocol() {
+        let createTeam = WireMessages.createTeam(teamName: "새 팀")
+        XCTAssertEqual(createTeam["type"] as? String, "create_team")
+        XCTAssertEqual(createTeam["team_name"] as? String, "새 팀")
+
+        let emptyTeam = WireMessages.createTeam(teamName: "")
+        XCTAssertEqual(emptyTeam["team_name"] as? String, "")
+
+        let roomChat = WireMessages.roomChat(message: "안녕하세요")
+        XCTAssertEqual(roomChat["type"] as? String, "room_chat")
+        XCTAssertEqual(roomChat["message"] as? String, "안녕하세요")
+
+        XCTAssertEqual(WireMessages.leaveRoom()["type"] as? String, "leave_room")
+    }
+
+    func testRoomUpdateAuthoritativelyDeterminesTeamMembership() throws {
+        let snapshot = try RoomUpdateParser.parse([
+            "type": "room_update",
+            "room_id": 9,
+            "title": "친선전",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 3,
+            "game_start_authority_user_id": 3,
+            "teams": [
+                [
+                    "id": 11,
+                    "name": "성주",
+                    "members": [
+                        ["user_id": 3, "nickname": "성주", "connection_status": "connected"]
+                    ],
+                ],
+                [
+                    "id": 12,
+                    "name": "상대팀",
+                    "members": [
+                        ["user_id": 4, "nickname": "상대", "connection_status": "connected"]
+                    ],
+                ],
+            ],
+        ])
+
+        XCTAssertTrue(snapshot.containsUserInTeam(3))
+        XCTAssertEqual(snapshot.team(containing: 3)?.name, "성주")
+        XCTAssertFalse(snapshot.containsUserInTeam(5))
+    }
+
+    func testRoomUpdateRejectsDuplicateUserAcrossTeams() {
+        XCTAssertThrowsError(try RoomUpdateParser.parse([
+            "type": "room_update",
+            "room_id": 9,
+            "title": "친선전",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 3,
+            "game_start_authority_user_id": 3,
+            "teams": [
+                ["id": 1, "name": "A", "members": [["user_id": 3, "nickname": "성주"]]],
+                ["id": 2, "name": "B", "members": [["user_id": 3, "nickname": "성주"]]],
+            ],
+        ]))
+    }
+
+    func testRoomChatParsingMatchesServerEcho() throws {
+        let chat = try RoomChatParser.parse([
+            "type": "room_chat",
+            "from_id": 3,
+            "from_nickname": "성주",
+            "message": "팀 만들기 전 채팅",
+        ])
+        XCTAssertEqual(chat, RoomChatMessage(
+            fromUserID: 3,
+            fromNickname: "성주",
+            message: "팀 만들기 전 채팅"
+        ))
+    }
+
+    func testRoomEventTeamCreatedFormattingMatchesPCClient() {
+        XCTAssertEqual(
+            RoomEventFormatter.message(from: [
+                "type": "room_event",
+                "event": "team_created",
+                "actor_user_id": 3,
+                "actor_nickname": "성주",
+                "team_name": "새 팀",
+            ]),
+            "성주가 '새 팀' 팀을 만들었습니다."
+        )
+        XCTAssertEqual(
+            RoomEventFormatter.message(from: [
+                "type": "room_event",
+                "event": "participant_joined",
+                "actor_user_id": 4,
+                "actor_nickname": "강",
+            ]),
+            "강이 입장했습니다."
+        )
+    }
+}
+
+extension Phase1CoreTests {
+    func testRoomJoinedParsingUsesSameAuthorityContractAsCreated() throws {
+        let snapshot = try RoomEntryParser.parseJoined([
+            "type": "room_joined",
+            "room_id": 12,
+            "title": "기존 방",
+            "max_players": 3,
+            "is_private": true,
+            "host_user_id": 7,
+            "game_start_authority_user_id": 8,
+        ])
+        XCTAssertEqual(snapshot.roomID, 12)
+        XCTAssertEqual(snapshot.hostUserID, 7)
+        XCTAssertEqual(snapshot.gameStartAuthorityUserID, 8)
+        XCTAssertThrowsError(try RoomEntryParser.parseJoined([
+            "type": "room_created",
+            "room_id": 12,
+            "title": "기존 방",
+            "max_players": 3,
+            "is_private": true,
+            "host_user_id": 7,
+            "game_start_authority_user_id": 8,
+        ]))
+    }
+}
+
+extension Phase1CoreTests {
+    func testRoomJoinActionCanBeEnabledIndependentlyOfRoomCreation() {
+        let actions = LobbyActionBuilder.roomActions(
+            roomCreationImplemented: true,
+            roomJoinImplemented: true,
+            spectatorInteractionImplemented: false
+        )
+        XCTAssertEqual(actions.map(\.title), ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"])
+        XCTAssertEqual(actions.map(\.isEnabled), [true, true, false, false, true])
     }
 }

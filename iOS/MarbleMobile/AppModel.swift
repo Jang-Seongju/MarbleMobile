@@ -18,7 +18,7 @@ struct SocialConfirmation: Identifiable {
 
 @MainActor
 final class AppModel: ObservableObject {
-    enum Screen { case login, lobby, roomStaging }
+    enum Screen { case login, lobby, gameRoom }
     enum LobbyPage { case users, rooms }
     enum EntryPhase: Equatable { case inactive, connecting, awaitingSessionEntry, active, recoveryRequired }
 
@@ -36,7 +36,17 @@ final class AppModel: ObservableObject {
     @Published var isPresentingCreateRoom = false
     @Published var isRoomCreationPending = false
     @Published var roomCreationErrorMessage: String?
+    @Published var pendingRoomJoin: GameRoomSummary?
+    @Published var roomJoinPassword = ""
+    @Published var isRoomJoinPending = false
+    @Published var roomJoinErrorMessage: String?
     @Published var roomEntry: RoomEntrySnapshot?
+    @Published var roomUpdate: RoomUpdateSnapshot?
+    @Published var roomMessages: [String] = []
+    @Published var teamNameDraft = ""
+    @Published var chatDraft = ""
+    @Published var isTeamCreationPending = false
+    @Published var isLeaveRoomPending = false
 
     // LoginWindow가 재로그인/회원가입 왕복에서도 입력 상태를 보존하는 PC 계약을 유지한다.
     @Published var loginUsername = ""
@@ -163,20 +173,103 @@ final class AppModel: ObservableObject {
         case .sort:
             announce("방 정렬은 현재 사용할 수 없습니다.")
         case .create:
-            guard entryPhase == .active, screen == .lobby else { return }
-            guard !isRoomCreationPending else { return }
+            guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
+            guard !isRoomCreationPending, !isRoomJoinPending else { return }
             roomCreationErrorMessage = nil
             isPresentingCreateRoom = true
-        case .join, .spectatorEntry:
-            announce("게임방 입장 UI가 아직 연결되지 않았습니다.")
+        case .join:
+            guard let room else { alertMessage = "입장할 방을 선택해 주세요."; return }
+            beginJoinRoom(room)
+        case .spectatorEntry:
+            announce("관중석 입장은 아직 연결되지 않았습니다.")
         }
     }
 
     func createRoom(_ request: RoomCreationRequest) {
-        guard entryPhase == .active, screen == .lobby, !isRoomCreationPending else { return }
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil, !isRoomCreationPending, !isRoomJoinPending else { return }
         isRoomCreationPending = true
         roomCreationErrorMessage = nil
         socket.send(WireMessages.createRoom(request))
+    }
+
+    func beginJoinRoom(_ room: GameRoomSummary) {
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
+        guard !isRoomCreationPending, !isRoomJoinPending else { return }
+        roomJoinErrorMessage = nil
+        if room.isPrivate {
+            roomJoinPassword = ""
+            pendingRoomJoin = room
+        } else {
+            sendJoinRoom(room: room, password: nil)
+        }
+    }
+
+    func submitPendingPrivateRoomJoin() {
+        guard let room = pendingRoomJoin, room.isPrivate else { return }
+        let password = roomJoinPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !password.isEmpty else {
+            roomJoinErrorMessage = "비밀번호를 입력해 주세요."
+            return
+        }
+        sendJoinRoom(room: room, password: password)
+    }
+
+    func cancelPendingRoomJoin() {
+        guard !isRoomJoinPending else { return }
+        pendingRoomJoin = nil
+        roomJoinPassword = ""
+        roomJoinErrorMessage = nil
+    }
+
+    private func sendJoinRoom(room: GameRoomSummary, password: String?) {
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
+        guard !isRoomCreationPending, !isRoomJoinPending else { return }
+        isRoomJoinPending = true
+        roomJoinErrorMessage = nil
+        socket.send(WireMessages.joinRoom(roomID: room.id, password: password))
+    }
+
+    var isInGameRoom: Bool { roomEntry != nil }
+
+    var hasJoinedTeam: Bool {
+        guard let userID = session?.identity.userID else { return false }
+        return roomUpdate?.containsUserInTeam(userID) == true
+    }
+
+    var currentTeamName: String? {
+        guard let userID = session?.identity.userID else { return nil }
+        return roomUpdate?.team(containing: userID)?.name
+    }
+
+    func createTeamFromDraft() {
+        guard roomEntry != nil, !hasJoinedTeam, !isTeamCreationPending, !isLeaveRoomPending else { return }
+        let teamName = teamNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        isTeamCreationPending = true
+        socket.send(WireMessages.createTeam(teamName: teamName))
+    }
+
+    func sendRoomChatFromDraft() {
+        guard roomEntry != nil else { return }
+        let message = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        socket.send(WireMessages.roomChat(message: message))
+        chatDraft = ""
+    }
+
+    func showLobbyFromGameRoom() {
+        guard roomEntry != nil else { return }
+        screen = .lobby
+    }
+
+    func showGameRoom() {
+        guard roomEntry != nil else { return }
+        screen = .gameRoom
+    }
+
+    func requestLeaveRoom() {
+        guard roomEntry != nil, !isLeaveRoomPending, !isTeamCreationPending else { return }
+        isLeaveRoomPending = true
+        socket.send(WireMessages.leaveRoom())
     }
 
     private func loadProfile(userID: Int) async {
@@ -217,17 +310,26 @@ final class AppModel: ObservableObject {
 
         guard entryPhase == .active else { return }
 
-        if type == "room_created" {
+        if type == "room_created" || type == "room_joined" {
             do {
-                let snapshot = try RoomEntryParser.parseCreated(data)
+                let snapshot = type == "room_created"
+                    ? try RoomEntryParser.parseCreated(data)
+                    : try RoomEntryParser.parseJoined(data)
                 isRoomCreationPending = false
                 isPresentingCreateRoom = false
                 roomCreationErrorMessage = nil
-                roomEntry = snapshot
-                screen = .roomStaging
+                isRoomJoinPending = false
+                pendingRoomJoin = nil
+                roomJoinPassword = ""
+                roomJoinErrorMessage = nil
+                enterGameRoom(snapshot)
             } catch {
                 isRoomCreationPending = false
                 isPresentingCreateRoom = false
+                isRoomJoinPending = false
+                pendingRoomJoin = nil
+                roomJoinPassword = ""
+                roomJoinErrorMessage = nil
                 socket.disconnect()
                 returnToLogin(message: "방 권한 정보를 확인할 수 없어 게임방을 열지 못했습니다.\n다시 로그인해 주세요.")
             }
@@ -235,6 +337,20 @@ final class AppModel: ObservableObject {
         }
 
         switch type {
+        case "room_update":
+            handleRoomUpdate(data)
+        case "room_event":
+            if let message = RoomEventFormatter.message(from: data) {
+                roomMessages.append(message)
+                announce(message)
+            }
+        case "room_chat":
+            if let chat = try? RoomChatParser.parse(data) {
+                roomMessages.append("\(chat.fromNickname): \(chat.message)")
+                announce("\(chat.fromNickname). \(chat.message)")
+            }
+        case "room_left":
+            handleRoomLeft(data)
         case "user_list":
             if let parsed = try? WireParser.lobbyUsers(from: data) { users = parsed }
         case "room_list":
@@ -250,6 +366,19 @@ final class AppModel: ObservableObject {
                 if isRoomCreationPending {
                     isRoomCreationPending = false
                     roomCreationErrorMessage = message
+                } else if isRoomJoinPending {
+                    isRoomJoinPending = false
+                    if pendingRoomJoin != nil {
+                        roomJoinErrorMessage = message
+                    } else {
+                        alertMessage = message
+                    }
+                } else if isTeamCreationPending {
+                    isTeamCreationPending = false
+                    alertMessage = message
+                } else if isLeaveRoomPending {
+                    isLeaveRoomPending = false
+                    alertMessage = message
                 } else {
                     alertMessage = message
                 }
@@ -257,6 +386,56 @@ final class AppModel: ObservableObject {
         default:
             break
         }
+    }
+
+
+    private func enterGameRoom(_ snapshot: RoomEntrySnapshot) {
+        roomEntry = snapshot
+        roomUpdate = nil
+        roomMessages = []
+        teamNameDraft = session?.identity.nickname ?? ""
+        chatDraft = ""
+        isTeamCreationPending = false
+        isLeaveRoomPending = false
+        screen = .gameRoom
+    }
+
+    private func handleRoomUpdate(_ data: [String: Any]) {
+        guard let currentRoomID = roomEntry?.roomID else { return }
+        do {
+            let snapshot = try RoomUpdateParser.parse(data)
+            guard snapshot.roomID == currentRoomID else { return }
+            let wasJoined = hasJoinedTeam
+            roomUpdate = snapshot
+            if !wasJoined, hasJoinedTeam {
+                isTeamCreationPending = false
+                if let actualTeamName = currentTeamName {
+                    teamNameDraft = actualTeamName
+                }
+            }
+        } catch {
+            // PC판과 같은 원칙: 잘못된 room_update로 기존 authoritative 상태를 덮어쓰지 않는다.
+            return
+        }
+    }
+
+    private func handleRoomLeft(_ data: [String: Any]) {
+        guard let currentRoomID = roomEntry?.roomID,
+              let roomID = data["room_id"] as? Int,
+              roomID == currentRoomID
+        else { return }
+        clearRoomState()
+        screen = .lobby
+    }
+
+    private func clearRoomState() {
+        roomEntry = nil
+        roomUpdate = nil
+        roomMessages = []
+        teamNameDraft = ""
+        chatDraft = ""
+        isTeamCreationPending = false
+        isLeaveRoomPending = false
     }
 
     private func handleDisconnect(_ message: String) {
@@ -284,7 +463,11 @@ final class AppModel: ObservableObject {
         isPresentingCreateRoom = false
         isRoomCreationPending = false
         roomCreationErrorMessage = nil
-        roomEntry = nil
+        pendingRoomJoin = nil
+        roomJoinPassword = ""
+        isRoomJoinPending = false
+        roomJoinErrorMessage = nil
+        clearRoomState()
     }
 
     func announce(_ message: String) {

@@ -22,8 +22,8 @@ struct RootView: View {
             LoginView()
         case .lobby:
             LobbyView()
-        case .roomStaging:
-            RoomEntryStagingView()
+        case .gameRoom:
+            GameRoomView()
         }
     }
 }

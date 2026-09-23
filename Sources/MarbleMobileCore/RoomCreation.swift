@@ -75,7 +75,15 @@ public enum RoomEntryParserError: Error, Equatable, LocalizedError, Sendable {
 
 public enum RoomEntryParser {
     public static func parseCreated(_ data: [String: Any]) throws -> RoomEntrySnapshot {
-        guard data["type"] as? String == "room_created",
+        try parse(data, expectedType: "room_created")
+    }
+
+    public static func parseJoined(_ data: [String: Any]) throws -> RoomEntrySnapshot {
+        try parse(data, expectedType: "room_joined")
+    }
+
+    private static func parse(_ data: [String: Any], expectedType: String) throws -> RoomEntrySnapshot {
+        guard data["type"] as? String == expectedType,
               let roomID = exactPositiveInt(data["room_id"]),
               let rawTitle = data["title"] as? String,
               rawTitle == rawTitle.trimmingCharacters(in: .whitespacesAndNewlines),

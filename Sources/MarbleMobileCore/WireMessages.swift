@@ -2,6 +2,32 @@ import Foundation
 
 public enum WireMessages {
 
+    public static func createTeam(teamName: String) -> [String: Any] {
+        ["type": "create_team", "team_name": teamName]
+    }
+
+    public static func roomChat(message: String) -> [String: Any] {
+        ["type": "room_chat", "message": message]
+    }
+
+    public static func leaveRoom() -> [String: Any] {
+        ["type": "leave_room"]
+    }
+
+    public static func joinRoom(roomID: Int, password: String? = nil) -> [String: Any] {
+        var message: [String: Any] = [
+            "type": "join_room",
+            "room_id": roomID,
+        ]
+        if let password {
+            let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                message["password"] = trimmed
+            }
+        }
+        return message
+    }
+
     public static func createRoom(_ request: RoomCreationRequest) -> [String: Any] {
         var message: [String: Any] = [
             "type": "create_room",

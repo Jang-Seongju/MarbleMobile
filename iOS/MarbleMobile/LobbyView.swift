@@ -30,10 +30,13 @@ struct LobbyView: View {
             }
             .navigationTitle("마블 게임 - 대기실")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if model.isInGameRoom {
+                        Button("게임방 보기") { model.showGameRoom() }
+                    }
                     Menu("메뉴") {
                         Button("방 개설") { model.performRoomAction(.create, room: nil) }
-                            .disabled(model.entryPhase != .active || model.isRoomCreationPending)
+                            .disabled(model.entryPhase != .active || model.isRoomCreationPending || model.isRoomJoinPending || model.isInGameRoom)
                         Divider()
                         Button("로그아웃") { model.logout() }
                     }
@@ -44,6 +47,13 @@ struct LobbyView: View {
                 set: { if !$0 && !model.isRoomCreationPending { model.isPresentingCreateRoom = false } }
             )) {
                 RoomCreationView()
+                    .environmentObject(model)
+            }
+            .sheet(isPresented: Binding(
+                get: { model.pendingRoomJoin != nil },
+                set: { if !$0 { model.cancelPendingRoomJoin() } }
+            )) {
+                RoomJoinView()
                     .environmentObject(model)
             }
             .alert("알림", isPresented: Binding(
@@ -128,7 +138,7 @@ struct LobbyView: View {
             targetUserID: user.id,
             currentUserID: model.session?.identity.userID ?? -1,
             socialState: model.socialState,
-            hasGameRoom: false,
+            hasGameRoom: model.isInGameRoom,
             isSpectator: false,
             messageImplemented: false,
             noteImplemented: false
@@ -172,9 +182,10 @@ struct LobbyView: View {
 
     @ViewBuilder
     private func roomRow(_ room: GameRoomSummary) -> some View {
+        let roomActionsAvailable = !model.isInGameRoom && !model.isRoomCreationPending && !model.isRoomJoinPending
         let actions = LobbyActionBuilder.roomActions(
-            roomCreationImplemented: true,
-            roomJoinImplemented: false,
+            roomCreationImplemented: roomActionsAvailable,
+            roomJoinImplemented: roomActionsAvailable,
             spectatorInteractionImplemented: false
         )
 
