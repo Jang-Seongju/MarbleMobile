@@ -74,15 +74,27 @@ public enum LobbyActionBuilder {
 
     // client(393) _on_room_context_menu()의 순서/조건을 그대로 보존한다.
     public static func roomActions(
-        roomInteractionImplemented: Bool,
+        roomCreationImplemented: Bool,
+        roomJoinImplemented: Bool,
         spectatorInteractionImplemented: Bool
     ) -> [LobbyRoomAction] {
         [
-            .init(kind: .create, title: "방 개설", isEnabled: roomInteractionImplemented),
-            .init(kind: .join, title: "참여하기", isEnabled: roomInteractionImplemented),
+            .init(kind: .create, title: "방 개설", isEnabled: roomCreationImplemented),
+            .init(kind: .join, title: "참여하기", isEnabled: roomJoinImplemented),
             .init(kind: .spectatorEntry, title: "관중석 입장", isEnabled: spectatorInteractionImplemented),
             .init(kind: .sort, title: "방 정렬", isEnabled: false),
             .init(kind: .roomInfo, title: "방 정보"),
         ]
+    }
+
+    public static func roomActions(
+        roomInteractionImplemented: Bool,
+        spectatorInteractionImplemented: Bool
+    ) -> [LobbyRoomAction] {
+        roomActions(
+            roomCreationImplemented: roomInteractionImplemented,
+            roomJoinImplemented: roomInteractionImplemented,
+            spectatorInteractionImplemented: spectatorInteractionImplemented
+        )
     }
 }

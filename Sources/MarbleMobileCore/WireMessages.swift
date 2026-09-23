@@ -1,6 +1,19 @@
 import Foundation
 
 public enum WireMessages {
+
+    public static func createRoom(_ request: RoomCreationRequest) -> [String: Any] {
+        var message: [String: Any] = [
+            "type": "create_room",
+            "title": request.title,
+            "max_players": request.maxPlayers,
+            "is_private": request.isPrivate,
+        ]
+        if let password = request.password {
+            message["password"] = password
+        }
+        return message
+    }
     public static func socialGetState() -> [String: Any] {
         ["type": "social_get_state"]
     }

@@ -192,3 +192,80 @@ extension Phase1CoreTests {
         XCTAssertEqual(WireMessages.userUnblock(targetUserID: 7)["type"] as? String, "user_unblock")
     }
 }
+
+extension Phase1CoreTests {
+    func testRoomCreationRequestMatchesPCValidationAndNormalization() throws {
+        let publicRequest = try RoomCreationRequest(
+            title: "  친선전  ", maxPlayers: 4, isPrivate: false, password: "ignored"
+        )
+        XCTAssertEqual(publicRequest.title, "친선전")
+        XCTAssertEqual(publicRequest.maxPlayers, 4)
+        XCTAssertFalse(publicRequest.isPrivate)
+        XCTAssertNil(publicRequest.password)
+
+        let privateRequest = try RoomCreationRequest(
+            title: "비공개", maxPlayers: 2, isPrivate: true, password: "  1234  "
+        )
+        XCTAssertEqual(privateRequest.password, "1234")
+
+        XCTAssertThrowsError(try RoomCreationRequest(title: "   ", maxPlayers: 4, isPrivate: false, password: nil))
+        XCTAssertThrowsError(try RoomCreationRequest(title: "방", maxPlayers: 5, isPrivate: false, password: nil))
+        XCTAssertThrowsError(try RoomCreationRequest(title: "방", maxPlayers: 4, isPrivate: true, password: "   "))
+    }
+
+    func testCreateRoomWireMessageMatchesPCProtocol() throws {
+        let request = try RoomCreationRequest(
+            title: "친선전", maxPlayers: 3, isPrivate: true, password: "pw"
+        )
+        let message = WireMessages.createRoom(request)
+        XCTAssertEqual(message["type"] as? String, "create_room")
+        XCTAssertEqual(message["title"] as? String, "친선전")
+        XCTAssertEqual(message["max_players"] as? Int, 3)
+        XCTAssertEqual(message["is_private"] as? Bool, true)
+        XCTAssertEqual(message["password"] as? String, "pw")
+
+        let publicMessage = WireMessages.createRoom(try RoomCreationRequest(
+            title: "공개방", maxPlayers: 4, isPrivate: false, password: "discarded"
+        ))
+        XCTAssertNil(publicMessage["password"])
+    }
+
+    func testRoomCreatedParsingMatchesServerAuthorityPayload() throws {
+        let snapshot = try RoomEntryParser.parseCreated([
+            "type": "room_created",
+            "room_id": 9,
+            "title": "친선전",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 3,
+            "game_start_authority_user_id": 3,
+        ])
+        XCTAssertEqual(snapshot, RoomEntrySnapshot(
+            roomID: 9,
+            title: "친선전",
+            maxPlayers: 4,
+            isPrivate: false,
+            hostUserID: 3,
+            gameStartAuthorityUserID: 3
+        ))
+
+        XCTAssertThrowsError(try RoomEntryParser.parseCreated([
+            "type": "room_created",
+            "room_id": 9,
+            "title": "친선전",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 3,
+        ]))
+    }
+
+    func testRoomActionsCanEnableCreateWithoutJoin() {
+        let actions = LobbyActionBuilder.roomActions(
+            roomCreationImplemented: true,
+            roomJoinImplemented: false,
+            spectatorInteractionImplemented: false
+        )
+        XCTAssertEqual(actions.map(\.title), ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"])
+        XCTAssertEqual(actions.map(\.isEnabled), [true, false, false, false, true])
+    }
+}

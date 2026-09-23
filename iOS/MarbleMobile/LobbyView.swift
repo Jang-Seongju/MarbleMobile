@@ -32,9 +32,19 @@ struct LobbyView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("메뉴") {
+                        Button("방 개설") { model.performRoomAction(.create, room: nil) }
+                            .disabled(model.entryPhase != .active || model.isRoomCreationPending)
+                        Divider()
                         Button("로그아웃") { model.logout() }
                     }
                 }
+            }
+            .sheet(isPresented: Binding(
+                get: { model.isPresentingCreateRoom },
+                set: { if !$0 && !model.isRoomCreationPending { model.isPresentingCreateRoom = false } }
+            )) {
+                RoomCreationView()
+                    .environmentObject(model)
             }
             .alert("알림", isPresented: Binding(
                 get: { model.alertMessage != nil },
@@ -148,7 +158,6 @@ struct LobbyView: View {
                 Text("항목 없음")
                     .accessibilityActions {
                         Button("방 개설") { model.performRoomAction(.create, room: nil) }
-                            .disabled(true)
                         Button("방 정렬") { model.performRoomAction(.sort, room: nil) }
                             .disabled(true)
                     }
@@ -164,7 +173,8 @@ struct LobbyView: View {
     @ViewBuilder
     private func roomRow(_ room: GameRoomSummary) -> some View {
         let actions = LobbyActionBuilder.roomActions(
-            roomInteractionImplemented: false,
+            roomCreationImplemented: true,
+            roomJoinImplemented: false,
             spectatorInteractionImplemented: false
         )
 

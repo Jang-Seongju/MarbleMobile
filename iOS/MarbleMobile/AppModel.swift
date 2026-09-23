@@ -18,7 +18,7 @@ struct SocialConfirmation: Identifiable {
 
 @MainActor
 final class AppModel: ObservableObject {
-    enum Screen { case login, lobby }
+    enum Screen { case login, lobby, roomStaging }
     enum LobbyPage { case users, rooms }
     enum EntryPhase: Equatable { case inactive, connecting, awaitingSessionEntry, active, recoveryRequired }
 
@@ -33,6 +33,10 @@ final class AppModel: ObservableObject {
     @Published var alertMessage: String?
     @Published var profileText: String?
     @Published var pendingSocialConfirmation: SocialConfirmation?
+    @Published var isPresentingCreateRoom = false
+    @Published var isRoomCreationPending = false
+    @Published var roomCreationErrorMessage: String?
+    @Published var roomEntry: RoomEntrySnapshot?
 
     // LoginWindow가 재로그인/회원가입 왕복에서도 입력 상태를 보존하는 PC 계약을 유지한다.
     @Published var loginUsername = ""
@@ -158,9 +162,21 @@ final class AppModel: ObservableObject {
             profileText = PresentationFormatter.roomInfoText(room)
         case .sort:
             announce("방 정렬은 현재 사용할 수 없습니다.")
-        case .create, .join, .spectatorEntry:
+        case .create:
+            guard entryPhase == .active, screen == .lobby else { return }
+            guard !isRoomCreationPending else { return }
+            roomCreationErrorMessage = nil
+            isPresentingCreateRoom = true
+        case .join, .spectatorEntry:
             announce("게임방 입장 UI가 아직 연결되지 않았습니다.")
         }
+    }
+
+    func createRoom(_ request: RoomCreationRequest) {
+        guard entryPhase == .active, screen == .lobby, !isRoomCreationPending else { return }
+        isRoomCreationPending = true
+        roomCreationErrorMessage = nil
+        socket.send(WireMessages.createRoom(request))
     }
 
     private func loadProfile(userID: Int) async {
@@ -200,6 +216,24 @@ final class AppModel: ObservableObject {
         }
 
         guard entryPhase == .active else { return }
+
+        if type == "room_created" {
+            do {
+                let snapshot = try RoomEntryParser.parseCreated(data)
+                isRoomCreationPending = false
+                isPresentingCreateRoom = false
+                roomCreationErrorMessage = nil
+                roomEntry = snapshot
+                screen = .roomStaging
+            } catch {
+                isRoomCreationPending = false
+                isPresentingCreateRoom = false
+                socket.disconnect()
+                returnToLogin(message: "방 권한 정보를 확인할 수 없어 게임방을 열지 못했습니다.\n다시 로그인해 주세요.")
+            }
+            return
+        }
+
         switch type {
         case "user_list":
             if let parsed = try? WireParser.lobbyUsers(from: data) { users = parsed }
@@ -211,13 +245,22 @@ final class AppModel: ObservableObject {
             requestSocialState()
         case "social_error", "chat_error", "invitation_error", "note_error":
             if let message = data["message"] as? String { alertMessage = message }
+        case "error":
+            if let message = data["message"] as? String {
+                if isRoomCreationPending {
+                    isRoomCreationPending = false
+                    roomCreationErrorMessage = message
+                } else {
+                    alertMessage = message
+                }
+            }
         default:
             break
         }
     }
 
     private func handleDisconnect(_ message: String) {
-        guard screen == .lobby else { return }
+        guard screen != .login else { return }
         returnToLogin(message: message)
     }
 
@@ -238,6 +281,10 @@ final class AppModel: ObservableObject {
         lobbyPage = .users
         pendingSocialConfirmation = nil
         profileText = nil
+        isPresentingCreateRoom = false
+        isRoomCreationPending = false
+        roomCreationErrorMessage = nil
+        roomEntry = nil
     }
 
     func announce(_ message: String) {
