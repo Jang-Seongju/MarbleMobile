@@ -13,7 +13,6 @@ struct LobbyView: View {
             VStack(spacing: 8) {
                 if model.entryPhase != .active {
                     Text(statusText)
-                        .accessibilityLabel("진입 상태 안내, \(statusText)")
                 } else if model.lobbyPage == .users {
                     userList
                 } else {
@@ -79,19 +78,6 @@ struct LobbyView: View {
                     }
                 }
             }
-            .onChange(of: model.users.map(\.id)) { _, _ in
-                guard model.entryPhase == .active, model.lobbyPage == .users else { return }
-                DispatchQueue.main.async { focusUserList() }
-            }
-            .onChange(of: model.rooms.map(\.id)) { _, _ in
-                guard model.entryPhase == .active, model.lobbyPage == .rooms else { return }
-                DispatchQueue.main.async { focusRoomList() }
-            }
-            .onChange(of: model.entryPhase) { _, newValue in
-                guard newValue == .active else { return }
-                model.lobbyPage = .users
-                DispatchQueue.main.async { focusUserList() }
-            }
         }
     }
 
@@ -114,11 +100,7 @@ struct LobbyView: View {
                 }
             }
         }
-        .accessibilityLabel("접속자 목록")
-        .accessibilityScrollAction { edge in
-            if edge == .leading { switchToRooms() }
-        }
-        .task { focusUserList() }
+        .accessibilityLabel("접속자")
     }
 
     @ViewBuilder
@@ -167,11 +149,7 @@ struct LobbyView: View {
                 }
             }
         }
-        .accessibilityLabel("게임방 목록")
-        .accessibilityScrollAction { edge in
-            if edge == .trailing { switchToUsers() }
-        }
-        .task { focusRoomList() }
+        .accessibilityLabel("게임방")
     }
 
     @ViewBuilder

@@ -4,7 +4,7 @@ struct LoginView: View {
     @EnvironmentObject private var model: AppModel
     @State private var submitting = false
     @State private var showingRegister = false
-    @AccessibilityFocusState private var focusedField: Field?
+    @FocusState private var focusedField: Field?
 
     enum Field: Hashable { case username, password }
 
@@ -20,8 +20,7 @@ struct LoginView: View {
                     .autocorrectionDisabled()
                     .textContentType(.username)
                     .submitLabel(.next)
-                    .accessibilityLabel("아이디 입력")
-                    .accessibilityFocused($focusedField, equals: .username)
+                    .focused($focusedField, equals: .username)
                     .onSubmit {
                         if allFieldsFilled { Task { await submitLogin() } }
                         else { focusedField = .password }
@@ -30,8 +29,7 @@ struct LoginView: View {
                     SecureField("비밀번호", text: $model.loginPassword)
                         .textContentType(.password)
                         .submitLabel(.go)
-                        .accessibilityLabel("비밀번호 입력")
-                        .accessibilityFocused($focusedField, equals: .password)
+                        .focused($focusedField, equals: .password)
                         .onSubmit { Task { await submitLogin() } }
 
                     Toggle("아이디/비밀번호 저장", isOn: $model.loginSaveCredentials)
@@ -44,14 +42,10 @@ struct LoginView: View {
                 }
             }
             .navigationTitle("마블 게임 - 로그인")
-            .accessibilityAction(.magicTap) { Task { await submitLogin() } }
             .task {
                 model.loadSavedLoginIfNeeded()
-                focusedField = model.loginUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .username : .password
             }
-            .sheet(isPresented: $showingRegister, onDismiss: {
-                focusedField = .username
-            }) {
+            .sheet(isPresented: $showingRegister) {
                 RegisterView()
                     .environmentObject(model)
             }

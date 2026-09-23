@@ -13,7 +13,7 @@ struct RegisterView: View {
     @State private var submitting = false
     @State private var alertMessage: String?
     @State private var registrationCompleted = false
-    @AccessibilityFocusState private var focus: Field?
+    @FocusState private var focus: Field?
 
     enum Field: Hashable { case username, nickname, password, confirm }
 
@@ -24,28 +24,32 @@ struct RegisterView: View {
                     TextField("아이디 (4~20자, 영문/숫자/언더스코어)", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .accessibilityLabel("아이디 입력")
-                        .accessibilityFocused($focus, equals: .username)
+                        .textContentType(.username)
+                        .submitLabel(.next)
+                        .focused($focus, equals: .username)
                         .onChange(of: username) { _, _ in usernameChecked = false }
                         .onSubmit { Task { await advanceUsername() } }
 
                     TextField("닉네임 (한글 1~10자 또는 영문/혼합 2~20자)", text: $nickname)
-                        .accessibilityLabel("닉네임 입력")
-                        .accessibilityFocused($focus, equals: .nickname)
+                        .textContentType(.nickname)
+                        .submitLabel(.next)
+                        .focused($focus, equals: .nickname)
                         .onChange(of: nickname) { _, _ in nicknameChecked = false }
                         .onSubmit { Task { await advanceNickname() } }
 
                     SecureField("비밀번호 (4자 이상)", text: $password)
-                        .accessibilityLabel("비밀번호 입력")
-                        .accessibilityFocused($focus, equals: .password)
+                        .textContentType(.newPassword)
+                        .submitLabel(.next)
+                        .focused($focus, equals: .password)
                         .onSubmit {
                             if allFilled { Task { await register() } }
                             else { focus = .confirm }
                         }
 
                     SecureField("비밀번호 확인", text: $passwordConfirm)
-                        .accessibilityLabel("비밀번호 확인 입력")
-                        .accessibilityFocused($focus, equals: .confirm)
+                        .textContentType(.newPassword)
+                        .submitLabel(.go)
+                        .focused($focus, equals: .confirm)
                         .onSubmit { Task { await register() } }
                 }
 
@@ -56,7 +60,6 @@ struct RegisterView: View {
                 }
             }
             .navigationTitle("마블 게임 - 회원가입")
-            .task { focus = .username }
             .alert(registrationCompleted ? "안내" : "알림", isPresented: Binding(
                 get: { alertMessage != nil },
                 set: { if !$0 { alertMessage = nil } }

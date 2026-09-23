@@ -4,6 +4,10 @@
 <dict>
     <key>CFBundleDisplayName</key><string>마블 게임</string>
     <key>CFBundleDevelopmentRegion</key><string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>ko</string>
+    </array>
     <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSRequiresIPhoneOS</key><true/>
@@ -26,11 +30,20 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-    <key>MARBLE_BASE_URL</key><string>http://127.0.0.1:8000</string>
+    <key>MARBLE_BASE_URL</key><string>$(MARBLE_BASE_URL)</string>
+    <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>NSLocalNetworkUsageDescription</key><string>마블 게임 서버에 연결하기 위해 로컬 네트워크 접근이 필요합니다.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>jsjmc.iptime.org</key>
+            <dict>
+                <key>NSIncludesSubdomains</key><false/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+        </dict>
     </dict>
 </dict>
 </plist>
