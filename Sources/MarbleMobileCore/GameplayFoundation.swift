@@ -110,6 +110,7 @@ public struct GameStartedSnapshot: Equatable, Sendable {
     public let yourPlayerID: Int
     public let currentPlayerID: Int
     public let players: [GamePlayerSnapshot]
+    public let cities: [GameCityStateSnapshot]
     public let festivalCityIDs: [Int]
     public let boardCatalog: BoardCatalogSnapshot
 }
@@ -117,6 +118,7 @@ public struct GameStartedSnapshot: Equatable, Sendable {
 public struct GameStateSnapshot: Equatable, Sendable {
     public let currentPlayerID: Int?
     public let players: [GamePlayerSnapshot]
+    public let cities: [GameCityStateSnapshot]
 }
 
 public enum GameplayParserError: Error, Equatable, LocalizedError, Sendable {
@@ -130,6 +132,7 @@ public enum GameplayParser {
               let yourPlayerID = positiveInt(data["your_player_id"]),
               let currentPlayerID = positiveInt(data["current_player_id"]),
               let rawPlayers = data["players"] as? [[String: Any]],
+              let rawCities = data["cities"] as? [[String: Any]],
               let rawFestival = data["festival_city_ids"] as? [Any],
               let rawBoard = data["board_cells"] as? [[String: Any]]
         else { throw GameplayParserError.invalidMessage }
@@ -147,10 +150,12 @@ public enum GameplayParser {
         else { throw GameplayParserError.invalidMessage }
 
         let board = try BoardCellsParser.parse(["type": "board_cells", "board_cells": rawBoard])
+        let cities = try parseCities(rawCities)
         return .init(
             yourPlayerID: yourPlayerID,
             currentPlayerID: currentPlayerID,
             players: players,
+            cities: cities,
             festivalCityIDs: festival,
             boardCatalog: board
         )
@@ -158,9 +163,11 @@ public enum GameplayParser {
 
     public static func gameState(_ data: [String: Any]) throws -> GameStateSnapshot {
         guard data["type"] as? String == "game_state",
-              let rawPlayers = data["players"] as? [[String: Any]]
+              let rawPlayers = data["players"] as? [[String: Any]],
+              let rawCities = data["cities"] as? [[String: Any]]
         else { throw GameplayParserError.invalidMessage }
         let players = try parsePlayers(rawPlayers)
+        let cities = try parseCities(rawCities)
         let current: Int?
         if data["current_player_id"] == nil || data["current_player_id"] is NSNull {
             current = nil
@@ -171,7 +178,7 @@ public enum GameplayParser {
         if let current, !players.contains(where: { $0.playerID == current }) {
             throw GameplayParserError.invalidMessage
         }
-        return .init(currentPlayerID: current, players: players)
+        return .init(currentPlayerID: current, players: players, cities: cities)
     }
 
     public static func turnStarted(_ data: [String: Any]) throws -> TurnStartedSnapshot {
@@ -193,6 +200,39 @@ public enum GameplayParser {
     public static func notificationPayload(_ data: [String: Any]) -> [String: Any]? {
         guard data["type"] as? String == "notification" else { return nil }
         return data["payload"] as? [String: Any]
+    }
+
+    private static func parseCities(_ rawCities: [[String: Any]]) throws -> [GameCityStateSnapshot] {
+        var ids = Set<Int>()
+        var result: [GameCityStateSnapshot] = []
+        result.reserveCapacity(rawCities.count)
+        for raw in rawCities {
+            guard let cityID = positiveInt(raw["city_id"]), ids.insert(cityID).inserted,
+                  let cityName = trimmedRequired(raw["city_name"]),
+                  let buildingsRaw = raw["buildings"] as? [Any],
+                  let effectsRaw = raw["city_effect_types"] as? [Any]
+            else { throw GameplayParserError.invalidMessage }
+            let buildings = buildingsRaw.compactMap { $0 as? String }
+            let effects = effectsRaw.compactMap { $0 as? String }
+            guard buildings.count == buildingsRaw.count, effects.count == effectsRaw.count else {
+                throw GameplayParserError.invalidMessage
+            }
+            let ownerID: Int?
+            if raw["owner_id"] == nil || raw["owner_id"] is NSNull {
+                ownerID = nil
+            } else {
+                guard let parsed = positiveInt(raw["owner_id"]) else { throw GameplayParserError.invalidMessage }
+                ownerID = parsed
+            }
+            result.append(.init(
+                cityID: cityID,
+                cityName: cityName,
+                ownerID: ownerID,
+                buildings: buildings,
+                cityEffectTypes: effects
+            ))
+        }
+        return result
     }
 
     private static func parsePlayers(_ rawPlayers: [[String: Any]]) throws -> [GamePlayerSnapshot] {

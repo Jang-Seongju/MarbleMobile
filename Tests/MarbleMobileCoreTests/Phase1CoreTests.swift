@@ -927,4 +927,305 @@ extension Phase1CoreTests {
         XCTAssertEqual(buildRequest.startBuildCities[0].cityID, 1)
         XCTAssertEqual(buildRequest.startBuildCities[0].buildOptions.map(\.id), ["building", "hotel"])
     }
+
+    private func presentationContextForAudioTests() -> GamePresentationContext {
+        let players = [
+            GamePlayerSnapshot(
+                playerID: 1, userID: 10, nickname: "나", teamName: "나",
+                marble: 2_000_000, position: 1, lapCount: 0,
+                isStranded: false, isBankrupt: false, isAI: false
+            ),
+            GamePlayerSnapshot(
+                playerID: 2, userID: nil, nickname: "AI돌이", teamName: "AI돌이",
+                marble: 2_000_000, position: 1, lapCount: 0,
+                isStranded: false, isBankrupt: false, isAI: true
+            ),
+        ]
+        let cells = [
+            BoardCellSnapshot(index: 1, name: "출발", cellType: "START", cityID: nil, cityType: nil, group: nil, basePrice: 0, row: 8, column: 8),
+            BoardCellSnapshot(index: 2, name: "방콕", cellType: "CITY", cityID: 1, cityType: "NORMAL", group: "연두", basePrice: 50_000, row: 8, column: 7),
+            BoardCellSnapshot(index: 8, name: "세계여행", cellType: "WORLD_TRAVEL", cityID: nil, cityType: nil, group: nil, basePrice: 0, row: 8, column: 1),
+        ]
+        return GamePresentationContext(
+            localPlayerID: 1,
+            players: players,
+            boardCatalog: BoardCatalogSnapshot(cells: cells),
+            cities: [GameCityStateSnapshot(cityID: 1, cityName: "방콕", ownerID: 1, buildings: ["빌라"], cityEffectTypes: [])]
+        )
+    }
+
+    func testPresentationTurnStartedMatchesPCRecordedVoiceContract() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "turn_started",
+            payload: ["player_id": 1],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertEqual(plan.persistentNotice, "당신 차례")
+        XCTAssertEqual(plan.category, .gameplay)
+        XCTAssertEqual(plan.interruptRetention, .preservePending)
+        guard case .parallel(let nodes) = plan.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(nodes.contains(.sfx(clip: "turn_end.wav", completion: .wait)))
+        XCTAssertTrue(nodes.contains(.voice(clip: "my_turn.wav", fallbackTTS: "당신 차례")))
+    }
+
+    func testPresentationArrivedSequencesDiceMoveAndArrivalSpeech() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "arrived",
+            payload: ["player_id": 2, "to_index": 2, "die1": 3, "die2": 4, "is_double": false],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertEqual(plan.persistentNotice, "[AI돌이] 7 → 방콕")
+        guard case .sequence(let nodes) = plan.root else { return XCTFail("sequence expected") }
+        XCTAssertEqual(nodes.first, .sfx(clip: "dice_roll.wav", completion: .wait))
+        XCTAssertTrue(nodes.contains(.voice(clip: "dice_7.wav", fallbackTTS: "[AI돌이] 7")))
+        XCTAssertTrue(nodes.contains(.sfx(clip: "move_step_7.wav", completion: .wait)))
+        XCTAssertTrue(nodes.contains(.tts("[AI돌이] 방콕")))
+    }
+
+    func testPresentationTollUsesLocalMoneyDirectionSFX() throws {
+        let context = presentationContextForAudioTests()
+        let paid = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "toll_paid",
+            payload: ["player_id": 1, "owner_id": 2, "amount": 120_000],
+            context: context
+        ))
+        XCTAssertEqual(paid.persistentNotice, "당신 AI돌이에게 통행료 120,000마블 지불")
+        guard case .parallel(let paidNodes) = paid.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(paidNodes.contains(.sfx(clip: "money_out.wav", completion: .wait)))
+
+        let received = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "toll_paid",
+            payload: ["player_id": 2, "owner_id": 1, "amount": 120_000],
+            context: context
+        ))
+        guard case .parallel(let receivedNodes) = received.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(receivedNodes.contains(.sfx(clip: "money_in.wav", completion: .wait)))
+    }
+
+    func testPresentationCityPurchaseUsesCanonicalPCMessage() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "city_purchased",
+            payload: ["player_id": 2, "city_id": 1, "cost": 50_000],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertEqual(plan.persistentNotice, "AI돌이가 방콕을 50,000마블에 구매했습니다")
+        XCTAssertEqual(plan.root, .tts("AI돌이가 방콕을 50,000마블에 구매했습니다"))
+    }
+
+    func testPresentationGameOverStopsBGMAndUsesWinningSFXForLocalWinner() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "game_over",
+            payload: ["winner_player_id": 1, "achievements": [], "is_last_survivor": true],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertEqual(plan.persistentNotice, "당신 승리: 최후의 1인")
+        guard case .parallel(let nodes) = plan.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(nodes.contains(.bgmStop))
+        XCTAssertTrue(nodes.contains(.sfx(clip: "winning.wav", completion: .wait)))
+        XCTAssertTrue(nodes.contains(.tts("당신 승리: 최후의 1인")))
+    }
+
+    func testGameStateCityParserRetainsOwnershipForPresentationReactions() throws {
+        let payload = try roundTripJSON([
+            "type": "game_state",
+            "current_player_id": 1,
+            "players": [[
+                "player_id": 1, "nickname": "사용자", "team_name": "사용자",
+                "marble": 2_000_000, "position": 1, "lap_count": 0,
+                "connection_status": "connected", "is_ai": false,
+            ]],
+            "cities": [[
+                "city_id": 1, "city_name": "방콕", "buildings": ["빌라"],
+                "group_name": "연두", "is_color_monopoly": false,
+                "has_olympic": false, "olympic_count": 0,
+                "city_effect_types": [], "is_festival": false,
+                "owner_id": 1, "owner_nickname": "사용자",
+            ]],
+        ])
+        let state = try GameplayParser.gameState(payload)
+        XCTAssertEqual(state.cities.count, 1)
+        XCTAssertEqual(state.cities[0].cityID, 1)
+        XCTAssertEqual(state.cities[0].ownerID, 1)
+        XCTAssertEqual(state.cities[0].buildings, ["빌라"])
+    }
+
+
+    func testInteractionPresentationFortunePreludeUsesCardSelectionAndReactionAudio() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "interaction_presentation",
+            payload: [
+                "player_id": 1,
+                "request_id": "req-fortune",
+                "action_type": "fortune_card",
+                "interaction_type": "acknowledge",
+                "payload": [
+                    "mission_type": "fortune_card",
+                    "card_id": "move_tax_1",
+                ],
+            ],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertNil(plan.persistentNotice)
+        guard case .parallel(let nodes) = plan.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(nodes.contains(.sfx(clip: "card_sellection.wav", completion: .wait)))
+        XCTAssertTrue(nodes.contains(.voice(clip: "ah.wav", fallbackTTS: nil)))
+    }
+
+    func testInteractionPresentationAttackAndDefensePreludesMatchPCClips() throws {
+        let context = presentationContextForAudioTests()
+        let attack = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "interaction_presentation",
+            payload: [
+                "interaction_type": "select_one_per_group",
+                "payload": [
+                    "mission_type": "fortune_selection",
+                    "groups": [["role": "attack_city"]],
+                ],
+            ],
+            context: context
+        ))
+        XCTAssertEqual(attack.root, .voice(clip: "attack_area.wav", fallbackTTS: nil))
+
+        let defense = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "interaction_presentation",
+            payload: ["interaction_type": "confirm", "payload": ["mission_type": "defense"]],
+            context: context
+        ))
+        XCTAssertEqual(defense.root, .voice(clip: "defence_card.wav", fallbackTTS: nil))
+    }
+
+    func testWorldTravelActivationStartsSelectionVoiceAndAirplaneBGM() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "interaction_presentation_activated",
+            payload: ["action_type": "world_travel_destination", "first_activation": true],
+            context: presentationContextForAudioTests()
+        ))
+        guard case .sequence(let nodes) = plan.root else { return XCTFail("sequence expected") }
+        guard case .parallel(let opening) = nodes.first else { return XCTFail("parallel opening expected") }
+        XCTAssertTrue(opening.contains(.voice(clip: "select_area.wav", fallbackTTS: nil)))
+        XCTAssertTrue(opening.contains(.bgmPlay(clip: "airplane.mp3", loop: true)))
+        XCTAssertTrue(nodes.contains(.tts("목적지를 선택하고 엔터를 누르세요.")))
+    }
+
+    func testPresentationAlienInvasionBatchIsGroupedOnceLikePC() throws {
+        let context = presentationContextForAudioTests()
+        let primary = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "building_destroyed",
+            payload: [
+                "city_id": 1,
+                "building_type": "villa",
+                "attack_type": "alien_invasion",
+                "attacker_player_id": 2,
+                "attack_effect_primary": true,
+                "attack_batch_items": [
+                    ["city_id": 1, "building_type": "villa"],
+                    ["city_id": 1, "building_type": "hotel"],
+                ],
+            ],
+            context: context
+        ))
+        XCTAssertEqual(primary.persistentNotice, "AI돌이의 외계인 침공 공격으로 방콕 빌라, 방콕 호텔 파괴")
+        guard case .parallel(let nodes) = primary.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(nodes.contains(.sfx(clip: "destruction.wav", completion: .wait)))
+        XCTAssertTrue(nodes.contains(.sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts("AI돌이의 외계인 침공 공격으로 방콕 빌라, 방콕 호텔 파괴")])))
+
+        XCTAssertNil(GameNotificationPresenter.build(
+            notificationType: "building_destroyed",
+            payload: [
+                "city_id": 1,
+                "building_type": "hotel",
+                "attack_type": "alien_invasion",
+                "attacker_player_id": 2,
+                "attack_effect_primary": false,
+                "attack_batch_items": [["city_id": 1, "building_type": "villa"]],
+            ],
+            context: context
+        ))
+    }
+
+    func testPresentationPlagueBatchActivationAndReleaseAreGroupedOnceLikePC() throws {
+        let context = presentationContextForAudioTests()
+        let activated = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "city_effect_activated",
+            payload: [
+                "city_id": 1,
+                "effect_type": "plague",
+                "caused_by_player_id": 2,
+                "effect_batch_city_ids": [1],
+                "effect_batch_primary": true,
+            ],
+            context: context
+        ))
+        XCTAssertEqual(activated.persistentNotice, "AI돌이의 전염병 공격으로 방콕 통행료 50퍼센트 하락")
+        XCTAssertEqual(activated.root, .sequence([
+            .voice(clip: "oh_no.wav", fallbackTTS: nil),
+            .tts("AI돌이의 전염병 공격으로 방콕 통행료 50퍼센트 하락"),
+        ]))
+        XCTAssertNil(GameNotificationPresenter.build(
+            notificationType: "city_effect_activated",
+            payload: [
+                "city_id": 1, "effect_type": "plague", "caused_by_player_id": 2,
+                "effect_batch_city_ids": [1], "effect_batch_primary": false,
+            ],
+            context: context
+        ))
+
+        let released = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "city_effect_released",
+            payload: [
+                "city_id": 1, "effect_type": "plague",
+                "effect_batch_city_ids": [1], "effect_batch_primary": true,
+            ],
+            context: context
+        ))
+        XCTAssertEqual(released.persistentNotice, "방콕의 전염병 해제")
+        XCTAssertNil(GameNotificationPresenter.build(
+            notificationType: "city_effect_released",
+            payload: [
+                "city_id": 1, "effect_type": "plague",
+                "effect_batch_city_ids": [1], "effect_batch_primary": false,
+            ],
+            context: context
+        ))
+    }
+
+    func testPresentationLastSurvivorLossDoesNotReplayLosingSFXAtGameOver() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "game_over",
+            payload: ["winner_player_id": 2, "achievements": [], "is_last_survivor": true],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertEqual(plan.persistentNotice, "AI돌이 승리: 최후의 1인")
+        guard case .parallel(let nodes) = plan.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(nodes.contains(.bgmStop))
+        XCTAssertFalse(nodes.contains(.sfx(clip: "losing.wav", completion: .wait)))
+        XCTAssertTrue(nodes.contains(.tts("AI돌이 승리: 최후의 1인")))
+    }
+
+    func testPresentationRollDiceRejectedUsesPCReasonTextAndPlayerPrefix() throws {
+        let plan = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "roll_dice_rejected",
+            payload: ["player_id": 2, "reason_code": "turn_preparation_conflict"],
+            context: presentationContextForAudioTests()
+        ))
+        XCTAssertEqual(plan.persistentNotice, "AI돌이 보석금과 무인도 탈출 카드를 동시에 사용할 수 없습니다.")
+        XCTAssertEqual(plan.root, .tts("AI돌이 보석금과 무인도 탈출 카드를 동시에 사용할 수 없습니다."))
+    }
+
+    func testCanonicalGameEventUsesSameMessageForPersistentTextAndDefaultTTS() {
+        let plan = PresentationPlan.gameEvent("같은 게임 메시지")
+        XCTAssertEqual(plan.persistentNotice, "같은 게임 메시지")
+        XCTAssertEqual(plan.root, .tts("같은 게임 메시지"))
+        XCTAssertEqual(plan.interruptRetention, .preservePending)
+    }
+
+    func testPresentationUnknownNotificationDoesNotInventMessageFallback() {
+        let plan = GameNotificationPresenter.build(
+            notificationType: "future_unknown_event",
+            payload: ["message": "서버 임의 문구"],
+            context: presentationContextForAudioTests()
+        )
+        XCTAssertNil(plan)
+    }
+
 }

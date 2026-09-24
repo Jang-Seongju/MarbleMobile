@@ -24,7 +24,11 @@ targets:
     type: application
     platform: iOS
     sources:
-      - iOS/MarbleMobile
+      - path: iOS/MarbleMobile
+        excludes:
+          - Resources/**
+      - path: iOS/MarbleMobile/Resources
+        buildPhase: resources
     dependencies:
       - target: MarbleMobileCore
     settings:

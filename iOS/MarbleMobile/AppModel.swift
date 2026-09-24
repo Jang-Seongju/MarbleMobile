@@ -52,6 +52,7 @@ final class AppModel: ObservableObject {
     @Published var activeInteraction: InteractionRequestSnapshot?
     @Published var interactionResponseSubmitted = false
     @Published var gamePlayers: [GamePlayerSnapshot] = []
+    @Published var gameCities: [GameCityStateSnapshot] = []
     @Published var gameIsActive = false
     @Published var gameFinished = false
     @Published var myPlayerID: Int?
@@ -80,11 +81,19 @@ final class AppModel: ObservableObject {
     let credentials = CredentialStore()
     let api: APIClient
     let socket: WebSocketClient
+    private let audio: IOSAudioController
+    private let output: IOSOutputOrchestrator
+    private let turnDeadlineWarning: TurnDeadlineWarningController
 
     init() {
         let config = AppConfiguration.load()
+        let audio = IOSAudioController()
         self.api = APIClient(config: config)
         self.socket = WebSocketClient(config: config)
+        self.audio = audio
+        self.output = IOSOutputOrchestrator(audio: audio)
+        self.turnDeadlineWarning = TurnDeadlineWarningController(audio: audio)
+        output.noticeSink = { [weak self] message in self?.roomMessages.append(message) }
         socket.onMessage = { [weak self] in self?.handleSocketMessage($0) }
         socket.onDisconnected = { [weak self] message in self?.handleDisconnect(message) }
     }
@@ -115,6 +124,10 @@ final class AppModel: ObservableObject {
             rooms = []
             socialState = .init()
             screen = .lobby
+            output.emit(PresentationPlan(
+                root: .sfx(clip: "login.WAV", completion: .startOnly),
+                category: .systemUI
+            ))
             entryPhase = .connecting
             socket.connect(accessToken: newSession.tokens.accessToken)
             entryPhase = .awaitingSessionEntry
@@ -129,6 +142,12 @@ final class AppModel: ObservableObject {
         socket.disconnect()
         clearAuthenticatedState()
         screen = .login
+        // 명시적 로그아웃에서만 재생한다. clearAuthenticatedState()가
+        // transient audio를 먼저 정리한 뒤 시작하는 client(393) 계약을 따른다.
+        output.emit(PresentationPlan(
+            root: .sfx(clip: "logout.wav", completion: .startOnly),
+            category: .systemUI
+        ))
     }
 
     func requestSocialState() { socket.send(WireMessages.socialGetState()) }
@@ -566,8 +585,7 @@ final class AppModel: ObservableObject {
         }
         guard names.count == ids.count else { return }
         let message = "축제 도시는 \(names.joined(separator: ", "))입니다."
-        roomMessages.append(message)
-        announce(message)
+        output.emit(.gameEvent(message))
     }
 
     private func handleGameStartTurnOrderEvent(_ data: [String: Any]) {
@@ -593,30 +611,45 @@ final class AppModel: ObservableObject {
             if let userID = WireScalarParser.exactInt(data["user_id"]), userID == session?.identity.userID {
                 message = "당신이 선입니다."
             } else {
-                message = "\(subjectWithParticle(nickname.trimmingCharacters(in: .whitespacesAndNewlines))) 선입니다."
+                message = "\(KoreanPresentationText.subject(nickname.trimmingCharacters(in: .whitespacesAndNewlines))) 선입니다."
             }
         default:
             return
         }
         guard let message else { return }
+        // client(393)는 플레이 순서 구조화 이벤트를 출력 큐와 별개로
+        // 메시지 창에 항상 기록한다. Voice/TTS는 아래 plan이 담당한다.
         roomMessages.append(message)
-        announce(message)
-    }
-
-    private func subjectWithParticle(_ value: String) -> String {
-        guard let scalar = value.unicodeScalars.last else { return value }
-        let code = Int(scalar.value)
-        let hangulBase = 0xAC00
-        let hangulLast = 0xD7A3
-        guard code >= hangulBase, code <= hangulLast else { return "\(value)가" }
-        let hasFinalConsonant = (code - hangulBase) % 28 != 0
-        return "\(value)\(hasFinalConsonant ? "이" : "가")"
+        switch event {
+        case "preparing":
+            output.emit(PresentationPlan(
+                root: .voice(clip: "dice_order.wav", fallbackTTS: message),
+                category: .gameplay,
+                queuePolicy: .enqueue,
+                interruptRetention: .preservePending
+            ))
+        case "first_player":
+            let isLocalFirst = WireScalarParser.exactInt(data["user_id"]) == session?.identity.userID
+            if isLocalFirst {
+                output.emit(PresentationPlan(
+                    root: .voice(clip: "first_player.wav", fallbackTTS: message),
+                    category: .systemUI,
+                    queuePolicy: .enqueue,
+                    interruptRetention: .preservePending
+                ))
+            } else {
+                output.emit(.systemTTS(message, preservePending: true))
+            }
+        default:
+            output.emit(.systemTTS(message, preservePending: true))
+        }
     }
 
     private func handleGameStarted(_ data: [String: Any]) {
         do {
             let snapshot = try GameplayParser.gameStarted(data)
             gamePlayers = snapshot.players
+            gameCities = snapshot.cities
             gameIsActive = true
             gameFinished = false
             myPlayerID = snapshot.yourPlayerID
@@ -634,8 +667,10 @@ final class AppModel: ObservableObject {
             boardCursor.reset()
             boardCostCycle.reset()
             boardAccessibilityMode = .directTouch
-            roomMessages.append("게임을 시작합니다.")
-            announce("게임을 시작합니다.")
+            let message = "게임을 시작합니다."
+            output.emit(.gameEvent(message, root: .sequence([
+                .voice(clip: "game_start.wav", fallbackTTS: message)
+            ])))
         } catch {
             return
         }
@@ -646,6 +681,7 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try GameplayParser.gameState(data)
             gamePlayers = snapshot.players
+            gameCities = snapshot.cities
             if let current = snapshot.currentPlayerID { currentPlayerID = current }
         } catch {
             return
@@ -657,30 +693,52 @@ final class AppModel: ObservableObject {
               let payload = GameplayParser.notificationPayload(data) else { return }
 
         if type == "turn_started" {
+            if turnDeadlineWarning.hasPendingZeroSFX {
+                output.enqueueAsyncBarrier { [weak self] completion in
+                    guard let self else { completion(); return }
+                    self.turnDeadlineWarning.waitForPendingZeroSFX(completion)
+                }
+            }
             turnCommandWindowOpen = false
             turnActionStarted = false
             guard let turn = try? GameplayParser.turnStarted(data) else { return }
             currentPlayerID = turn.playerID
             currentTurnGeneration = turn.turnGeneration
             nextTurnCommand = turn.nextTurnCommand
-            let nickname = gamePlayers.first(where: { $0.playerID == turn.playerID })?.nickname
             if turn.playerID == myPlayerID {
-                socket.send(WireMessages.turnReady(turnGeneration: turn.turnGeneration))
-                turnCommandWindowOpen = true
-                announce("당신 차례")
-            } else if let nickname {
-                announce("\(nickname) 차례")
+                let expectedPlayerID = turn.playerID
+                let expectedGeneration = turn.turnGeneration
+                output.enqueueBarrier { [weak self] in
+                    guard let self,
+                          self.currentPlayerID == expectedPlayerID,
+                          self.currentPlayerID == self.myPlayerID,
+                          self.currentTurnGeneration == expectedGeneration
+                    else { return }
+                    self.socket.send(WireMessages.turnReady(turnGeneration: expectedGeneration))
+                    self.turnCommandWindowOpen = true
+                }
             }
-            return
-        }
-
-        if type == "turn_ended" {
+        } else if type == "turn_activated" {
+            let playerID = WireScalarParser.exactInt(payload["player_id"])
+            let generation = WireScalarParser.exactInt(payload["turn_generation"])
+            if playerID == myPlayerID, generation == currentTurnGeneration {
+                let remaining = WireScalarParser.nonBooleanNumber(payload["turn_remaining_seconds"])?.doubleValue
+                let deadline = payload["turn_deadline_at"] as? String
+                _ = turnDeadlineWarning.startForTurn(
+                    playerID: playerID,
+                    localPlayerID: myPlayerID,
+                    turnGeneration: generation,
+                    turnDeadlineAt: deadline,
+                    turnRemainingSeconds: remaining
+                )
+            }
+        } else if type == "turn_ended" {
+            turnDeadlineWarning.stop(preserveZeroSFX: true)
             turnCommandWindowOpen = false
             turnActionStarted = false
             currentTurnGeneration = nil
-            return
-        }
-        if type == "game_over" {
+        } else if type == "game_over" {
+            turnDeadlineWarning.stop(preserveZeroSFX: true)
             turnCommandWindowOpen = false
             turnActionStarted = false
             currentTurnGeneration = nil
@@ -689,114 +747,31 @@ final class AppModel: ObservableObject {
             activeInteraction = nil
             interactionResponseSubmitted = false
             boardAccessibilityMode = .directTouch
-            let message = gameOverMessage(payload)
-            roomMessages.append(message)
-            announce(message)
-            return
-        }
-        if type == "roll_dice_rejected" {
+        } else if type == "roll_dice_rejected" {
             if let playerID = WireScalarParser.exactInt(payload["player_id"]),
                myPlayerID != nil, playerID != myPlayerID { return }
             turnActionStarted = false
-            let reasonCode = (payload["reason_code"] as? String) ?? ""
-            announce(gameReasonText(reasonCode))
-            return
-        }
-        if type == "arrived",
-           let playerID = WireScalarParser.exactInt(payload["player_id"]),
-           let index = WireScalarParser.exactInt(payload["to_index"]), (1...32).contains(index) {
-            if playerID == myPlayerID {
-                boardCursor.jump(to: index)
-                boardCostCycle.reset()
-            }
-            let name = playerID == myPlayerID
-                ? "당신"
-                : (gamePlayers.first(where: { $0.playerID == playerID })?.nickname ?? "플레이어")
-            let location = boardCatalog?.cell(at: index)?.name ?? "\(index)번 칸"
-            let die1 = WireScalarParser.exactInt(payload["die1"]) ?? 0
-            let die2 = WireScalarParser.exactInt(payload["die2"]) ?? 0
-            let isDouble = WireScalarParser.exactBool(payload["is_double"]) ?? false
-            let dice = die1 > 0 && die2 > 0 ? (isDouble ? "더블 \(die1 + die2)" : "\(die1 + die2)") : ""
-            let text = "[\(name)] \(dice) → \(location)".replacingOccurrences(of: "]  →", with: "] →")
-            roomMessages.append(text)
-            announce("[\(name)] \(location)")
-            return
+        } else if type == "arrived",
+                  let playerID = WireScalarParser.exactInt(payload["player_id"]),
+                  let index = WireScalarParser.exactInt(payload["to_index"]), (1...32).contains(index),
+                  playerID == myPlayerID {
+            boardCursor.jump(to: index)
+            boardCostCycle.reset()
         }
 
-        if let message = payload["message"] as? String, !message.isEmpty {
-            roomMessages.append(message)
-            announce(message)
+        let context = GamePresentationContext(
+            localPlayerID: myPlayerID,
+            players: gamePlayers,
+            boardCatalog: boardCatalog,
+            cities: gameCities
+        )
+        if let plan = GameNotificationPresenter.build(
+            notificationType: type,
+            payload: payload,
+            context: context
+        ) {
+            output.emit(plan)
         }
-    }
-
-    private func gameReasonText(_ code: String) -> String {
-        switch code {
-        case "not_enough_marble": return "마블이 부족합니다."
-        case "not_enough_asset": return "매각 가능한 자산이 부족합니다."
-        case "already_owned": return "이미 소유자가 있습니다."
-        case "not_owner": return "소유자가 아닙니다."
-        case "max_building": return "이미 최대 단계입니다."
-        case "landmark_not_acquirable": return "랜드마크 도시는 인수할 수 없습니다."
-        case "island_not_acquirable": return "섬 도시는 인수할 수 없습니다."
-        case "beach_not_acquirable": return "해변 도시는 인수할 수 없습니다."
-        case "invalid_selection": return "선택할 수 없는 항목입니다."
-        case "invalid_action": return "잘못된 동작입니다."
-        case "invalid_state": return "현재 상태에서는 처리할 수 없습니다."
-        case "not_my_turn": return "내 차례가 아닙니다."
-        case "already_started": return "이미 시작했습니다."
-        case "not_started": return "게임이 아직 시작되지 않았습니다."
-        case "turn_timeout", "timeout": return "제한 시간이 지났습니다."
-        case "cannot_cancel": return "취소할 수 없습니다."
-        case "max_olympic": return "이미 최대 올림픽 개최 상태입니다."
-        case "card_not_found": return "사용할 수 있는 카드가 없습니다."
-        case "card_not_usable": return "지금 사용할 수 없는 카드입니다."
-        case "turn_preparation_unavailable": return "현재는 주사위 실행 준비를 변경할 수 없습니다."
-        case "not_stranded": return "무인도 상태가 아닙니다."
-        case "bail_marble_shortage": return "보석금 20만 마블을 지급하기에 마블이 부족합니다."
-        case "island_escape_not_available": return "무인도 탈출 카드는 무인도에서만 사용할 수 있습니다."
-        case "salary_booster_already_active": return "월급 부스터가 이미 활성화되어 있습니다."
-        case "held_card_selection_stale": return "선택했던 보관 카드가 현재 보관 카드와 일치하지 않습니다."
-        case "turn_preparation_conflict": return "보석금과 무인도 탈출 카드를 동시에 사용할 수 없습니다."
-        case "city_not_found": return "도시 정보를 찾을 수 없습니다."
-        case "player_not_found": return "플레이어 정보를 찾을 수 없습니다."
-        case "not_implemented": return "아직 구현되지 않은 기능입니다."
-        case "unknown_error", "": return "주사위를 굴릴 수 없습니다."
-        default: return code
-        }
-    }
-
-    private func gameOverMessage(_ payload: [String: Any]) -> String {
-        let winnerID = WireScalarParser.exactInt(payload["winner_player_id"])
-        let winner: String
-        if let winnerID, let player = gamePlayers.first(where: { $0.playerID == winnerID }) {
-            winner = winnerID == myPlayerID ? "당신" : player.nickname
-        } else {
-            winner = ""
-        }
-
-        var labels: [String] = []
-        if let achievements = payload["achievements"] as? [[String: Any]] {
-            for achievement in achievements {
-                switch achievement["ending_monopoly_type"] as? String {
-                case "triple_color":
-                    labels.append("트리플 컬러독점")
-                case "line":
-                    if let line = achievement["line_type"] as? String, ["A", "B", "C", "D"].contains(line) {
-                        labels.append("\(line)라인독점")
-                    }
-                case "tourist":
-                    labels.append("관광지독점")
-                default:
-                    break
-                }
-            }
-        }
-        if labels.isEmpty, WireScalarParser.exactBool(payload["is_last_survivor"]) == true {
-            labels.append("최후의 1인")
-        }
-        var message = winner.isEmpty ? "승리" : "\(winner) 승리"
-        if !labels.isEmpty { message += ": " + labels.joined(separator: "/") }
-        return message
     }
 
     private func handleInteractionRequest(_ data: [String: Any]) {
@@ -810,6 +785,13 @@ final class AppModel: ObservableObject {
             if request.interactionType == "select_destination",
                activatedInteractionRequestIDs.insert(request.requestID).inserted {
                 socket.send(WireMessages.interactionPresentationActivate(requestID: request.requestID))
+            } else if request.interactionType != "acknowledge", !request.description.isEmpty {
+                output.emit(PresentationPlan(
+                    root: .tts(request.description),
+                    category: .gameplay,
+                    queuePolicy: .enqueue,
+                    interruptRetention: .dropPending
+                ))
             }
         } catch {
             return
@@ -820,6 +802,9 @@ final class AppModel: ObservableObject {
         guard let flowID = data["interaction_flow_id"] as? String,
               !flowID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard activeInteraction == nil || activeInteraction?.flowID == flowID else { return }
+        if activeInteraction?.interactionType == "select_destination" {
+            output.stopBGM()
+        }
         activeInteraction = nil
         interactionResponseSubmitted = false
         activatedInteractionRequestIDs.removeAll()
@@ -991,9 +976,13 @@ final class AppModel: ObservableObject {
         case "interaction_flow_completed":
             handleInteractionFlowCompleted(data)
         case "information_response":
-            if let text = formatInformationResponse(data) { announce(text) }
+            if let text = formatInformationResponse(data) {
+                output.emit(.systemTTS(text, queuePolicy: .userInputInterrupt))
+            }
         case "game_notice":
-            if let message = data["message"] as? String, !message.isEmpty { roomMessages.append(message); announce(message) }
+            if let message = data["message"] as? String, !message.isEmpty {
+                output.emit(.gameEvent(message))
+            }
         case "board_cells":
             handleBoardCells(data)
         case "room_update":
@@ -1001,12 +990,40 @@ final class AppModel: ObservableObject {
         case "room_event":
             if let message = RoomEventFormatter.message(from: data) {
                 roomMessages.append(message)
-                announce(message)
+                let clip = roomSoundClip(for: data["sound_event"] as? String)
+                if let clip {
+                    output.emit(PresentationPlan(
+                        root: .parallel([
+                            .sfx(clip: clip, completion: .startOnly),
+                            .tts(message)
+                        ]),
+                        category: .systemUI,
+                        queuePolicy: .enqueue,
+                        interruptRetention: .preservePending
+                    ))
+                } else {
+                    output.emit(.systemTTS(message, preservePending: true))
+                }
+            }
+        case "room_sound":
+            if let clip = roomSoundClip(for: data["sound_event"] as? String) {
+                output.emit(PresentationPlan(
+                    root: .sfx(clip: clip, completion: .startOnly),
+                    category: .systemUI
+                ))
             }
         case "room_chat":
             if let chat = try? RoomChatParser.parse(data) {
                 roomMessages.append("\(chat.fromNickname): \(chat.message)")
-                announce("\(chat.fromNickname). \(chat.message)")
+                output.emit(PresentationPlan(
+                    root: .parallel([
+                        .sfx(clip: "chat.wav", completion: .startOnly),
+                        .tts("\(chat.fromNickname). \(chat.message)")
+                    ]),
+                    category: .chat,
+                    queuePolicy: .interrupt,
+                    interruptRetention: .preservePending
+                ))
             }
         case "room_left":
             handleRoomLeft(data)
@@ -1050,6 +1067,7 @@ final class AppModel: ObservableObject {
 
 
     private func enterGameRoom(_ snapshot: RoomEntrySnapshot) {
+        output.stopAll()
         isRoomEntryRecoveryPending = false
         roomEntry = snapshot
         roomUpdate = nil
@@ -1122,11 +1140,13 @@ final class AppModel: ObservableObject {
     }
 
     private func clearGameplayState() {
+        turnDeadlineWarning.stop(preserveZeroSFX: false)
         clearAISelection()
         activeInteraction = nil
         interactionResponseSubmitted = false
         activatedInteractionRequestIDs = []
         gamePlayers = []
+        gameCities = []
         gameIsActive = false
         gameFinished = false
         myPlayerID = nil
@@ -1141,6 +1161,7 @@ final class AppModel: ObservableObject {
     }
 
     private func clearRoomState() {
+        output.stopAll()
         roomEntry = nil
         roomUpdate = nil
         roomMessages = []
@@ -1188,7 +1209,17 @@ final class AppModel: ObservableObject {
         clearRoomState()
     }
 
+    private func roomSoundClip(for event: String?) -> String? {
+        switch event {
+        case "room_enter": return "room_enter.wav"
+        case "spectator_enter": return "spectator_enter.wav"
+        case "spectator_to_room": return "spectator_to_room.wav"
+        case "leave": return "leave.wav"
+        default: return nil
+        }
+    }
+
     func announce(_ message: String) {
-        UIAccessibility.post(notification: .announcement, argument: message)
+        output.emit(.systemTTS(message, queuePolicy: .userInputInterrupt))
     }
 }
