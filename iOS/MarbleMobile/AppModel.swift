@@ -47,6 +47,7 @@ final class AppModel: ObservableObject {
     @Published var chatDraft = ""
     @Published var isTeamCreationPending = false
     @Published var isLeaveRoomPending = false
+    private var isRoomEntryRecoveryPending = false
 
     // LoginWindow가 재로그인/회원가입 왕복에서도 입력 상태를 보존하는 PC 계약을 유지한다.
     @Published var loginUsername = ""
@@ -186,14 +187,14 @@ final class AppModel: ObservableObject {
     }
 
     func createRoom(_ request: RoomCreationRequest) {
-        guard entryPhase == .active, screen == .lobby, roomEntry == nil, !isRoomCreationPending, !isRoomJoinPending else { return }
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil, !isRoomCreationPending, !isRoomJoinPending, !isRoomEntryRecoveryPending else { return }
         isRoomCreationPending = true
         roomCreationErrorMessage = nil
         socket.send(WireMessages.createRoom(request))
     }
 
     func beginJoinRoom(_ room: GameRoomSummary) {
-        guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil, !isRoomEntryRecoveryPending else { return }
         guard !isRoomCreationPending, !isRoomJoinPending else { return }
         roomJoinErrorMessage = nil
         if room.isPrivate == true {
@@ -324,14 +325,18 @@ final class AppModel: ObservableObject {
                 roomJoinErrorMessage = nil
                 enterGameRoom(snapshot)
             } catch {
+                // room_created / room_joined는 서버가 membership을 확정한 뒤 보내는
+                // 성공 응답이다. 응답이 malformed여도 인증 세션 전체를 끊지 않는다.
+                // 이미 확정된 room membership만 명시적으로 되돌린 뒤 대기실을 유지한다.
                 isRoomCreationPending = false
                 isPresentingCreateRoom = false
                 isRoomJoinPending = false
                 pendingRoomJoin = nil
                 roomJoinPassword = ""
                 roomJoinErrorMessage = nil
-                socket.disconnect()
-                returnToLogin(message: "방 권한 정보를 확인할 수 없어 게임방을 열지 못했습니다.\n다시 로그인해 주세요.")
+                isRoomEntryRecoveryPending = true
+                socket.send(WireMessages.leaveRoom())
+                alertMessage = error.localizedDescription
             }
             return
         }
@@ -390,6 +395,7 @@ final class AppModel: ObservableObject {
 
 
     private func enterGameRoom(_ snapshot: RoomEntrySnapshot) {
+        isRoomEntryRecoveryPending = false
         roomEntry = snapshot
         roomUpdate = nil
         roomMessages = []
@@ -420,6 +426,16 @@ final class AppModel: ObservableObject {
     }
 
     private func handleRoomLeft(_ data: [String: Any]) {
+        // malformed room_created / room_joined 뒤의 보상 leave_room ACK는
+        // roomEntry를 만들지 않은 상태에서 도착한다. 이 경우에도 복구 완료로
+        // 인정하고 인증/웹소켓 세션은 그대로 유지한다.
+        if isRoomEntryRecoveryPending {
+            isRoomEntryRecoveryPending = false
+            clearRoomState()
+            screen = .lobby
+            return
+        }
+
         guard let currentRoomID = roomEntry?.roomID,
               let roomID = data["room_id"] as? Int,
               roomID == currentRoomID
@@ -467,6 +483,7 @@ final class AppModel: ObservableObject {
         roomJoinPassword = ""
         isRoomJoinPending = false
         roomJoinErrorMessage = nil
+        isRoomEntryRecoveryPending = false
         clearRoomState()
     }
 

@@ -149,8 +149,7 @@ public enum RoomUpdateParser {
     }
 
     private static func exactInt(_ value: Any?) -> Int? {
-        guard let value, !(value is Bool), let result = value as? Int else { return nil }
-        return result
+        WireScalarParser.exactInt(value)
     }
 }
 
@@ -187,7 +186,7 @@ public enum RoomChatParser {
     }
 
     private static func exactPositiveInt(_ value: Any?) -> Int? {
-        guard let value, !(value is Bool), let result = value as? Int, result >= 1 else { return nil }
+        guard let result = WireScalarParser.exactInt(value), result >= 1 else { return nil }
         return result
     }
 }

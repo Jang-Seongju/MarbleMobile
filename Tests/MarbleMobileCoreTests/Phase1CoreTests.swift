@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import MarbleMobileCore
 
@@ -418,5 +419,136 @@ extension Phase1CoreTests {
         )
         XCTAssertEqual(actions.map(\.title), ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"])
         XCTAssertEqual(actions.map(\.isEnabled), [true, true, false, false, true])
+    }
+}
+
+
+extension Phase1CoreTests {
+    private func roundTripJSON(_ object: [String: Any]) throws -> [String: Any] {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    func testNetworkJSONIntegerOneIsAcceptedByStrictRoomEntryParser() throws {
+        let payload = try roundTripJSON([
+            "type": "room_created",
+            "room_id": 1,
+            "title": "네트워크 방",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 1,
+            "game_start_authority_user_id": 1,
+        ])
+
+        let snapshot = try RoomEntryParser.parseCreated(payload)
+        XCTAssertEqual(snapshot.roomID, 1)
+        XCTAssertEqual(snapshot.hostUserID, 1)
+        XCTAssertEqual(snapshot.gameStartAuthorityUserID, 1)
+    }
+
+    func testNetworkJSONIntegerOneIsAcceptedByRoomUpdateChatAndRecoveryParsers() throws {
+        let update = try roundTripJSON([
+            "type": "room_update",
+            "room_id": 1,
+            "title": "네트워크 방",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 1,
+            "game_start_authority_user_id": 1,
+            "teams": [[
+                "id": 1,
+                "name": "첫 팀",
+                "members": [[
+                    "user_id": 1,
+                    "nickname": "첫 사용자",
+                    "connection_status": "connected",
+                ]],
+            ]],
+        ])
+        let room = try RoomUpdateParser.parse(update)
+        XCTAssertEqual(room.roomID, 1)
+        XCTAssertEqual(room.teams.first?.id, 1)
+        XCTAssertEqual(room.teams.first?.members.first?.userID, 1)
+
+        let chat = try roundTripJSON([
+            "type": "room_chat",
+            "from_id": 1,
+            "from_nickname": "첫 사용자",
+            "message": "안녕하세요",
+        ])
+        XCTAssertEqual(try RoomChatParser.parse(chat).fromUserID, 1)
+
+        let recovery = try roundTripJSON([
+            "type": "session_entry",
+            "entry_mode": "active_game_recovery",
+            "recovery_id": "recovery-1",
+            "room_id": 1,
+            "game_session_id": "game-1",
+            "your_player_id": 1,
+        ])
+        let entry = try SessionEntryParser.parse(recovery)
+        XCTAssertEqual(entry.roomID, 1)
+        XCTAssertEqual(entry.yourPlayerID, 1)
+    }
+
+    func testStrictNetworkIntegerParserStillRejectsBooleanAndFloatingPoint() throws {
+        let booleanRoomID = try roundTripJSON([
+            "type": "room_created",
+            "room_id": true,
+            "title": "잘못된 방",
+            "max_players": 4,
+            "is_private": false,
+            "host_user_id": 2,
+            "game_start_authority_user_id": 2,
+        ])
+        XCTAssertThrowsError(try RoomEntryParser.parseCreated(booleanRoomID))
+
+        let floatingJSON = #"{"type":"room_created","room_id":1.0,"title":"잘못된 방","max_players":4,"is_private":false,"host_user_id":2,"game_start_authority_user_id":2}"#
+        let floatingRoomID = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(floatingJSON.utf8)) as? [String: Any]
+        )
+        XCTAssertThrowsError(try RoomEntryParser.parseCreated(floatingRoomID))
+    }
+}
+
+
+extension Phase1CoreTests {
+    func testNetworkJSONNumericZeroAndOneRemainNumbersInPresentation() throws {
+        let profile = try roundTripJSON([
+            "account": ["nickname": "첫 사용자"],
+            "stats": [
+                "total_games": 1, "wins": 1, "losses": 0, "win_rate": 100.0,
+                "victory_score": 1, "cumulative_marble": 1, "bankruptcies": 0,
+                "last_survivor_wins": 1, "ending_monopoly_wins": 0,
+                "triple_color_ending_wins": 0, "line_ending_wins": 0,
+                "tourist_ending_wins": 0, "ending_monopoly_total": 0,
+            ],
+            "ranking": [
+                "adjusted_average_marble": 1,
+                "adjusted_average_victory_score": 1,
+                "marble_score": 1,
+                "ranking_score": 1,
+                "rank": 1,
+            ],
+            "runtime": ["connection_status": "connected", "location_type": "lobby"],
+        ])
+        let text = PresentationFormatter.userProfileText(profile)
+        XCTAssertTrue(text.contains("총 게임 수: 1"))
+        XCTAssertTrue(text.contains("승리: 1"))
+        XCTAssertTrue(text.contains("패배: 0"))
+        XCTAssertTrue(text.contains("누적 마블: 1"))
+        XCTAssertTrue(text.contains("순위: 1위"))
+    }
+
+    func testNetworkJSONBooleanDoesNotMasqueradeAsLobbyIntegerID() throws {
+        let payload = try roundTripJSON([
+            "users": [[
+                "user_id": true,
+                "nickname": "잘못된 사용자",
+                "connection_status": "connected",
+                "is_game_in_progress": false,
+            ]],
+        ])
+        XCTAssertEqual(try WireParser.lobbyUsers(from: payload), [])
     }
 }

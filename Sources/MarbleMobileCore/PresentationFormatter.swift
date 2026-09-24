@@ -104,8 +104,7 @@ public enum PresentationFormatter {
         return string
     }
     private static func number(_ value: Any?) -> NSNumber? {
-        guard !(value is Bool), !(value is NSNull) else { return nil }
-        return value as? NSNumber
+        WireScalarParser.nonBooleanNumber(value)
     }
     private static func intValue(_ value: Any?) -> String { String(number(value)?.intValue ?? 0) }
     private static func victoryScoreValue(_ value: Any?) -> String {
@@ -120,15 +119,12 @@ public enum PresentationFormatter {
     private static func marbleValue(_ value: Any?) -> String {
         guard let value = number(value)?.doubleValue else { return "없음" }
         let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = true
         formatter.groupingSeparator = ","
-        formatter.groupingSize = 3
-        formatter.secondaryGroupingSize = 3
         let isInteger = value.rounded() == value
         formatter.maximumFractionDigits = isInteger ? 0 : 2
         formatter.minimumFractionDigits = isInteger ? 0 : 2
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
     private static func rankValue(_ value: Any?) -> String {

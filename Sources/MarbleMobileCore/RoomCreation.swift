@@ -113,7 +113,6 @@ public enum RoomEntryParser {
     }
 
     private static func exactInt(_ value: Any?) -> Int? {
-        guard let value, !(value is Bool), let result = value as? Int else { return nil }
-        return result
+        WireScalarParser.exactInt(value)
     }
 }

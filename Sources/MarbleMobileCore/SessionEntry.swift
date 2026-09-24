@@ -73,7 +73,7 @@ public enum SessionEntryParser {
     }
 
     private static func positiveInt(_ value: Any?) -> Int? {
-        guard !(value is Bool), let value = value as? Int, value > 0 else { return nil }
+        guard let value = WireScalarParser.exactInt(value), value > 0 else { return nil }
         return value
     }
 }
