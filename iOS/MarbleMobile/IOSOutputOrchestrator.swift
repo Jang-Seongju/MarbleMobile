@@ -17,8 +17,8 @@ final class IOSOutputOrchestrator {
     private var executingBarrier = false
     private var generation = 0
 
-    init(audio: IOSAudioController = IOSAudioController()) {
-        self.audio = audio
+    init(audio: IOSAudioController? = nil) {
+        self.audio = audio ?? IOSAudioController()
     }
 
     func emit(_ plan: PresentationPlan) {
