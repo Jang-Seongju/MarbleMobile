@@ -196,7 +196,7 @@ final class AppModel: ObservableObject {
         guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
         guard !isRoomCreationPending, !isRoomJoinPending else { return }
         roomJoinErrorMessage = nil
-        if room.isPrivate {
+        if room.isPrivate == true {
             roomJoinPassword = ""
             pendingRoomJoin = room
         } else {
@@ -205,7 +205,7 @@ final class AppModel: ObservableObject {
     }
 
     func submitPendingPrivateRoomJoin() {
-        guard let room = pendingRoomJoin, room.isPrivate else { return }
+        guard let room = pendingRoomJoin, room.isPrivate == true else { return }
         let password = roomJoinPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !password.isEmpty else {
             roomJoinErrorMessage = "비밀번호를 입력해 주세요."

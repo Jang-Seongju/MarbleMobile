@@ -10,7 +10,7 @@ struct RoomJoinView: View {
                 if let room = model.pendingRoomJoin {
                     Section("방 정보") {
                         Text("\(room.id): \(room.title)")
-                        Text("\(room.current)/\(room.maxPlayers)명")
+                        Text(verbatim: "\(room.current.map(String.init) ?? "알 수 없음")/\(room.maxPlayers.map(String.init) ?? "알 수 없음")명")
                         Text("비공개 방")
                     }
                 }
