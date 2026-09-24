@@ -2,14 +2,20 @@ import Foundation
 import CoreFoundation
 
 
-enum WireScalarParser {
-    static func nonBooleanNumber(_ value: Any?) -> NSNumber? {
+public enum WireScalarParser {
+    public static func nonBooleanNumber(_ value: Any?) -> NSNumber? {
         guard let value, !(value is NSNull), let number = value as? NSNumber else { return nil }
         guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         return number
     }
 
-    static func exactInt(_ value: Any?) -> Int? {
+    public static func exactBool(_ value: Any?) -> Bool? {
+        guard let value, !(value is NSNull), let number = value as? NSNumber else { return nil }
+        guard CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    public static func exactInt(_ value: Any?) -> Int? {
         guard let value, let number = nonBooleanNumber(value) else { return nil }
 
         // JSONSerialization represents JSON integers as NSNumber. Values 0 and 1

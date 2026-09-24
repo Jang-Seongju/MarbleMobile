@@ -3,6 +3,7 @@ import MarbleMobileCore
 
 struct GameRoomView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var showLeaveConfirmation = false
     @AccessibilityFocusState private var teamNameAccessibilityFocus: Bool
     @AccessibilityFocusState private var boardAccessibilityFocus: Bool
@@ -14,8 +15,26 @@ struct GameRoomView: View {
 
                 teamArea
 
-                GameBoardShell(messages: model.roomMessages)
-                    .accessibilityFocused($boardAccessibilityFocus)
+                GameBoardShell(
+                    messages: model.roomMessages,
+                    catalog: model.boardCatalog,
+                    cursorIndex: model.boardCursor.index,
+                    directTouchEnabled: model.isBoardDirectTouchEnabled && voiceOverEnabled,
+                    onPreviousCell: model.moveBoardCursorBackward,
+                    onNextCell: model.moveBoardCursorForward,
+                    onPreviousCityCost: model.cycleBoardCityCostBackward,
+                    onNextCityCost: model.cycleBoardCityCostForward,
+                    onExitDirectTouch: model.enterStandardVoiceOverBoardMode,
+                    onEnterDirectTouch: model.enterDirectTouchBoardMode,
+                    onMagicTap: model.performBoardMagicTap,
+                    onEscape: { showLeaveConfirmation = true },
+                    onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
+                    onLineA: { model.jumpToBoardLine("A") },
+                    onLineB: { model.jumpToBoardLine("B") },
+                    onLineC: { model.jumpToBoardLine("C") },
+                    onLineD: { model.jumpToBoardLine("D") }
+                )
+                .accessibilityFocused($boardAccessibilityFocus)
 
                 chatArea
             }
@@ -50,6 +69,20 @@ struct GameRoomView: View {
             .onChange(of: model.hasJoinedTeam) { wasJoined, isJoined in
                 guard !wasJoined, isJoined else { return }
                 DispatchQueue.main.async { boardAccessibilityFocus = true }
+            }
+            .onChange(of: model.boardAccessibilityMode) { _, _ in
+                guard model.isBoardReady else { return }
+                boardAccessibilityFocus = false
+                DispatchQueue.main.async { boardAccessibilityFocus = true }
+            }
+            .sheet(item: $model.aiSelectionRequest) { request in
+                AIPlayerSelectionSheet(request: request)
+                    .environmentObject(model)
+            }
+            .sheet(item: $model.activeInteraction) { request in
+                GameInteractionSheet(request: request)
+                    .id(request.requestID)
+                    .environmentObject(model)
             }
         }
     }
@@ -89,11 +122,13 @@ struct GameRoomView: View {
                 model.createTeamFromDraft()
             }
             .disabled(model.isTeamCreationPending)
+        } else if model.gameIsActive {
+            Button("주사위 던지기") { model.performRollDice() }
         } else {
-            // 게임 시작 이후 프로토콜은 실제 보드/Interaction 입력 계층과 함께 연결한다.
-            // unsupported game_started 상태에 먼저 진입하지 않도록 이 단계에서는 명시적으로 잠근다.
-            Button("게임 시작") {}
-                .disabled(true)
+            Button(model.isGameStartPending ? "게임 시작 중" : "게임 시작") {
+                model.requestGameStart()
+            }
+            .disabled(model.isGameStartPending)
         }
     }
 
@@ -134,6 +169,26 @@ struct GameRoomView: View {
 
 private struct GameBoardShell: View {
     let messages: [String]
+    let catalog: BoardCatalogSnapshot?
+    let cursorIndex: Int
+    let directTouchEnabled: Bool
+    let onPreviousCell: () -> Void
+    let onNextCell: () -> Void
+    let onPreviousCityCost: () -> Void
+    let onNextCityCost: () -> Void
+    let onExitDirectTouch: () -> Void
+    let onEnterDirectTouch: () -> Void
+    let onMagicTap: () -> Void
+    let onEscape: () -> Void
+    let onSelectedPlayerInfo: () -> Void
+    let onLineA: () -> Void
+    let onLineB: () -> Void
+    let onLineC: () -> Void
+    let onLineD: () -> Void
+
+    private var currentDescription: String {
+        catalog?.cell(at: cursorIndex)?.shortDescription ?? "보드 정보가 아직 준비되지 않았습니다."
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -141,24 +196,41 @@ private struct GameBoardShell: View {
             let cell = side / 9
 
             ZStack {
-                ForEach(0..<81, id: \.self) { index in
-                    let row = index / 9
-                    let column = index % 9
+                ForEach(0..<81, id: \.self) { gridIndex in
+                    let row = gridIndex / 9
+                    let column = gridIndex % 9
                     if row == 0 || row == 8 || column == 0 || column == 8 {
-                        Rectangle()
-                            .strokeBorder(.secondary, lineWidth: 0.5)
-                            .frame(width: cell, height: cell)
+                        boardCell(row: row, column: column, size: cell)
                             .position(
                                 x: (CGFloat(column) + 0.5) * cell,
                                 y: (CGFloat(row) + 0.5) * cell
                             )
-                            .accessibilityHidden(true)
                     }
                 }
 
                 messageArea
                     .frame(width: cell * 7, height: cell * 7)
                     .position(x: side / 2, y: side / 2)
+                    .accessibilityHidden(directTouchEnabled)
+
+                if directTouchEnabled {
+                    GameBoardDirectTouchSurface(
+                        currentCellDescription: currentDescription,
+                        onPreviousCell: onPreviousCell,
+                        onNextCell: onNextCell,
+                        onPreviousCityCost: onPreviousCityCost,
+                        onNextCityCost: onNextCityCost,
+                        onExitDirectTouch: onExitDirectTouch,
+                        onMagicTap: onMagicTap,
+                        onEscape: onEscape,
+                        onSelectedPlayerInfo: onSelectedPlayerInfo,
+                        onLineA: onLineA,
+                        onLineB: onLineB,
+                        onLineC: onLineC,
+                        onLineD: onLineD
+                    )
+                    .frame(width: side, height: side)
+                }
             }
             .frame(width: side, height: side, alignment: .topLeading)
         }
@@ -166,6 +238,34 @@ private struct GameBoardShell: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("게임 보드")
+        .accessibilityValue(currentDescription)
+        .accessibilityHint(directTouchEnabled
+            ? "다이렉트 터치 사용 중"
+            : "두 번 탭하면 다이렉트 터치를 시작합니다.")
+        .accessibilityAction(.default) {
+            if !directTouchEnabled { onEnterDirectTouch() }
+        }
+    }
+
+    @ViewBuilder
+    private func boardCell(row: Int, column: Int, size: CGFloat) -> some View {
+        let snapshot = catalog?.cell(row: row, column: column)
+        let isSelected = snapshot?.index == cursorIndex
+
+        ZStack {
+            Rectangle()
+                .strokeBorder(isSelected ? .primary : .secondary, lineWidth: isSelected ? 2 : 0.5)
+            if let snapshot {
+                Text(snapshot.name)
+                    .font(.system(size: max(7, size * 0.16)))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.35)
+                    .multilineTextAlignment(.center)
+                    .padding(1)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 
     private var messageArea: some View {

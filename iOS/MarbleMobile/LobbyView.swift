@@ -155,7 +155,9 @@ struct LobbyView: View {
             if let value { lastUserID = value }
         }
         .accessibilityActions {
-            ForEach(actions) { action in
+            // VoiceOver의 한 손가락 아래 쓸기가 PC판 메뉴의 순방향이 되도록
+            // 등록 순서만 뒤집는다. 도메인 액션 배열 자체는 PC 순서를 유지한다.
+            ForEach(actions.reversed()) { action in
                 Button(action.title) { model.performUserAction(action.kind, user: user) }
                     .disabled(!action.isEnabled)
             }
@@ -194,8 +196,15 @@ struct LobbyView: View {
             .onChange(of: focusedRoomID) { _, value in
                 if let value { lastRoomID = value }
             }
+            .accessibilityAction(.default) {
+                if roomActionsAvailable {
+                    model.performRoomAction(.join, room: room)
+                }
+            }
             .accessibilityActions {
-                ForEach(actions) { action in
+                // VoiceOver의 한 손가락 아래 쓸기가 PC판 메뉴의 순방향이 되도록
+                // 등록 순서만 뒤집는다.
+                ForEach(actions.reversed()) { action in
                     Button(action.title) { model.performRoomAction(action.kind, room: room) }
                         .disabled(!action.isEnabled)
                 }

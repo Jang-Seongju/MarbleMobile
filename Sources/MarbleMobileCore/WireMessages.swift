@@ -71,4 +71,69 @@ public enum WireMessages {
     public static func userUnblock(targetUserID: Int) -> [String: Any] {
         ["type": "user_unblock", "target_user_id": targetUserID]
     }
+
+    public static func gameStart() -> [String: Any] {
+        ["type": "game_start"]
+    }
+
+    public static func gameStartAISelectionResponse(requestID: String, selectedAIIDs: [String]) -> [String: Any] {
+        [
+            "type": "game_start_ai_selection_response",
+            "request_id": requestID,
+            "selected_ai_ids": selectedAIIDs,
+        ]
+    }
+
+    public static func gameStartAISelectionCancel(requestID: String) -> [String: Any] {
+        ["type": "game_start_ai_selection_cancel", "request_id": requestID]
+    }
+
+    public static func turnReady(turnGeneration: Int) -> [String: Any] {
+        ["type": "game_action", "action": "turn_ready", "turn_generation": turnGeneration]
+    }
+
+    public static func rollDice() -> [String: Any] {
+        ["type": "game_action", "action": "roll_dice"]
+    }
+
+    public static func interactionResponse(
+        requestID: String,
+        responseType: String,
+        payload: [String: Any] = [:]
+    ) -> [String: Any] {
+        [
+            "type": "game_action",
+            "action": "interaction_response",
+            "request_id": requestID,
+            "response_type": responseType,
+            "payload": payload,
+        ]
+    }
+
+    public static func interactionPresentationActivate(requestID: String) -> [String: Any] {
+        [
+            "type": "game_action",
+            "action": "interaction_presentation_activate",
+            "request_id": requestID,
+        ]
+    }
+
+    public static func informationQuery(
+        queryType: String,
+        playerID: Int? = nil,
+        cityID: Int? = nil,
+        view: String? = nil,
+        payload: [String: Any] = [:]
+    ) -> [String: Any] {
+        var message: [String: Any] = [
+            "type": "game_action",
+            "action": "information_query",
+            "query_type": queryType,
+        ]
+        if let playerID { message["player_id"] = playerID }
+        if let cityID { message["city_id"] = cityID }
+        if let view { message["view"] = view }
+        for (key, value) in payload { message[key] = value }
+        return message
+    }
 }

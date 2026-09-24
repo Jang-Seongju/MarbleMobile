@@ -552,3 +552,379 @@ extension Phase1CoreTests {
         XCTAssertEqual(try WireParser.lobbyUsers(from: payload), [])
     }
 }
+
+extension Phase1CoreTests {
+    private func boardCellsPayloadForDirectTouchTests() -> [String: Any] {
+        var cells: [[String: Any]] = []
+        for index in 1...32 {
+            let row: Int
+            let col: Int
+            switch index {
+            case 1...9:
+                row = 8
+                col = 9 - index
+            case 10...16:
+                row = 17 - index
+                col = 0
+            case 17...25:
+                row = 0
+                col = index - 17
+            default:
+                row = index - 25
+                col = 8
+            }
+
+            let isStart = index == 1
+            cells.append([
+                "index": index,
+                "name": isStart ? "출발" : "도시 \(index)",
+                "cell_type": isStart ? "START" : "CITY",
+                "city_id": isStart ? NSNull() : index,
+                "city_type": isStart ? NSNull() : "general",
+                "group": isStart ? NSNull() : "연두",
+                "base_price": isStart ? 0 : 20_000,
+                "row": row,
+                "col": col,
+            ])
+        }
+        return ["type": "board_cells", "board_cells": cells]
+    }
+
+    func testBoardCellsParserMatchesServer677StaticBoardContract() throws {
+        let original = boardCellsPayloadForDirectTouchTests()
+        let encoded = try JSONSerialization.data(withJSONObject: original)
+        let payload = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let board = try BoardCellsParser.parse(payload)
+
+        XCTAssertEqual(board.cells.count, 32)
+        XCTAssertEqual(board.cell(at: 1)?.row, 8)
+        XCTAssertEqual(board.cell(at: 1)?.column, 8)
+        XCTAssertEqual(board.cell(at: 1)?.shortDescription, "출발")
+        XCTAssertEqual(board.cell(at: 2)?.shortDescription, "도시 2, 연두")
+        XCTAssertEqual(board.cell(at: 17)?.row, 0)
+        XCTAssertEqual(board.cell(at: 17)?.column, 0)
+        XCTAssertEqual(board.cell(at: 32)?.row, 7)
+        XCTAssertEqual(board.cell(at: 32)?.column, 8)
+    }
+
+    func testBoardCellsParserRejectsMalformedTopology() throws {
+        var duplicateIndex = boardCellsPayloadForDirectTouchTests()
+        var cells = try XCTUnwrap(duplicateIndex["board_cells"] as? [[String: Any]])
+        cells[1]["index"] = 1
+        duplicateIndex["board_cells"] = cells
+        XCTAssertThrowsError(try BoardCellsParser.parse(duplicateIndex))
+
+        var booleanIndex = boardCellsPayloadForDirectTouchTests()
+        cells = try XCTUnwrap(booleanIndex["board_cells"] as? [[String: Any]])
+        cells[0]["index"] = true
+        booleanIndex["board_cells"] = cells
+        let encoded = try JSONSerialization.data(withJSONObject: booleanIndex)
+        let roundTripped = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertThrowsError(try BoardCellsParser.parse(roundTripped))
+    }
+
+    func testBoardCursorUsesCircularPreviousAndNextOrder() {
+        var cursor = BoardCursorState(index: 1)
+        XCTAssertEqual(cursor.movePrevious(), 32)
+        XCTAssertEqual(cursor.moveNext(), 1)
+        XCTAssertEqual(cursor.moveNext(), 2)
+    }
+
+    func testCityCostCycleDownIsForwardAndUpIsReverse() {
+        var cycle = CityCostCycleState()
+        XCTAssertEqual(cycle.moveForward(), .toll)
+        XCTAssertEqual(cycle.moveForward(), .acquisition)
+        XCTAssertEqual(cycle.moveForward(), .sale)
+        XCTAssertEqual(cycle.moveForward(), .toll)
+
+        cycle.reset()
+        XCTAssertEqual(cycle.moveBackward(), .sale)
+        XCTAssertEqual(cycle.moveBackward(), .acquisition)
+        XCTAssertEqual(cycle.moveBackward(), .toll)
+    }
+}
+
+extension Phase1CoreTests {
+    func testGameplayWireMessagesMatchServer677Protocol() {
+        XCTAssertEqual(WireMessages.gameStart() as NSDictionary, ["type": "game_start"] as NSDictionary)
+        XCTAssertEqual(
+            WireMessages.gameStartAISelectionResponse(requestID: "req-1", selectedAIIDs: ["ai-a", "ai-b"]) as NSDictionary,
+            ["type": "game_start_ai_selection_response", "request_id": "req-1", "selected_ai_ids": ["ai-a", "ai-b"]] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.gameStartAISelectionCancel(requestID: "req-1") as NSDictionary,
+            ["type": "game_start_ai_selection_cancel", "request_id": "req-1"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.turnReady(turnGeneration: 1) as NSDictionary,
+            ["type": "game_action", "action": "turn_ready", "turn_generation": 1] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.rollDice() as NSDictionary,
+            ["type": "game_action", "action": "roll_dice"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.interactionResponse(
+                requestID: "interaction-1",
+                responseType: "selected",
+                payload: ["selected_ids": ["villa", "hotel"]]
+            ) as NSDictionary,
+            [
+                "type": "game_action", "action": "interaction_response",
+                "request_id": "interaction-1", "response_type": "selected",
+                "payload": ["selected_ids": ["villa", "hotel"]],
+            ] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.interactionPresentationActivate(requestID: "interaction-1") as NSDictionary,
+            ["type": "game_action", "action": "interaction_presentation_activate", "request_id": "interaction-1"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.informationQuery(
+                queryType: "player_info",
+                payload: ["opponent_player_id": 2]
+            ) as NSDictionary,
+            [
+                "type": "game_action", "action": "information_query",
+                "query_type": "player_info", "opponent_player_id": 2,
+            ] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.informationQuery(
+                queryType: "city_cost", cityID: 1,
+                payload: ["cost_type": "toll"]
+            ) as NSDictionary,
+            [
+                "type": "game_action", "action": "information_query",
+                "query_type": "city_cost", "city_id": 1, "cost_type": "toll",
+            ] as NSDictionary
+        )
+    }
+
+    func testAISelectionParserAcceptsRealNetworkIntegerOneAndPreservesServerOrder() throws {
+        let payload = try roundTripJSON([
+            "type": "game_start_ai_selection_required",
+            "request_id": "selection-1",
+            "room_id": 1,
+            "human_player_count": 1,
+            "max_players": 4,
+            "minimum_ai_count": 1,
+            "maximum_ai_count": 3,
+            "allowed_ai_counts": [1, 2, 3],
+            "available_ai_participants": [
+                ["ai_id": "ai-one", "nickname": "AI하나"],
+                ["ai_id": "ai-two", "nickname": "AI둘"],
+                ["ai_id": "ai-three", "nickname": "AI셋"],
+            ],
+        ])
+        let request = try AIPlayerSelectionParser.parse(payload)
+        XCTAssertEqual(request.roomID, 1)
+        XCTAssertEqual(request.humanPlayerCount, 1)
+        XCTAssertEqual(request.allowedAICounts, [1, 2, 3])
+        XCTAssertEqual(request.availableAI.map(\.aiID), ["ai-one", "ai-two", "ai-three"])
+
+        var invalid = payload
+        invalid["human_player_count"] = true
+        XCTAssertThrowsError(try AIPlayerSelectionParser.parse(invalid))
+    }
+
+    func testGameStartedParserAcceptsServer677InitialPlayerShape() throws {
+        let boardPayload = boardCellsPayloadForDirectTouchTests()
+        let cells = try XCTUnwrap(boardPayload["board_cells"] as? [[String: Any]])
+        let payload = try roundTripJSON([
+            "type": "game_started",
+            "your_player_id": 1,
+            "current_player_id": 2,
+            "players": [
+                [
+                    "player_id": 1, "user_id": 1, "nickname": "사용자", "team_name": "사용자",
+                    "marble": 2_000_000, "position": 1, "lap_count": 0,
+                    "connection_status": "connected", "is_ai": false,
+                ],
+                [
+                    "player_id": 2, "user_id": NSNull(), "nickname": "AI돌이", "team_name": "AI돌이",
+                    "marble": 2_000_000, "position": 1, "lap_count": 0,
+                    "connection_status": NSNull(), "is_ai": true,
+                ],
+            ],
+            "festival_city_ids": [1, 2, 3],
+            "cities": [],
+            "board_cells": cells,
+            "static_information": ["items": []],
+        ])
+        let started = try GameplayParser.gameStarted(payload)
+        XCTAssertEqual(started.yourPlayerID, 1)
+        XCTAssertEqual(started.currentPlayerID, 2)
+        XCTAssertEqual(started.players.count, 2)
+        XCTAssertFalse(started.players[0].isStranded)
+        XCTAssertFalse(started.players[0].isBankrupt)
+        XCTAssertTrue(started.players[1].isAI)
+        XCTAssertEqual(started.festivalCityIDs, [1, 2, 3])
+        XCTAssertEqual(started.boardCatalog.cells.count, 32)
+    }
+
+    func testTurnStartedParserUsesGenerationAndDefaultsToRollDice() throws {
+        let explicit = try roundTripJSON([
+            "type": "notification", "notification_type": "turn_started",
+            "payload": ["player_id": 1, "turn_generation": 1, "next_turn_command": "select_world_travel_destination"],
+        ])
+        XCTAssertEqual(
+            try GameplayParser.turnStarted(explicit),
+            TurnStartedSnapshot(playerID: 1, turnGeneration: 1, nextTurnCommand: "select_world_travel_destination")
+        )
+
+        let defaulted = try roundTripJSON([
+            "type": "notification", "notification_type": "turn_started",
+            "payload": ["player_id": 2, "turn_generation": 3],
+        ])
+        XCTAssertEqual(
+            try GameplayParser.turnStarted(defaulted),
+            TurnStartedSnapshot(playerID: 2, turnGeneration: 3, nextTurnCommand: "roll_dice")
+        )
+    }
+
+    func testInteractionParserCoversConfirmBuildAndWorldTravelDestination() throws {
+        let purchase = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-p", "request_id": "req-p",
+            "action_type": "purchase_city", "interaction_type": "confirm", "cancellable": true,
+            "payload": ["mission_type": "purchase_city", "city_id": 1, "city_name": "방콕", "cost": 200_000],
+        ])
+        let purchaseRequest = try InteractionRequestParser.parse(purchase)
+        XCTAssertEqual(purchaseRequest.interactionType, "confirm")
+        XCTAssertTrue(purchaseRequest.cancellable)
+        XCTAssertEqual(purchaseRequest.missionType, "purchase_city")
+
+        let build = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-b", "request_id": "req-b",
+            "action_type": "build", "interaction_type": "select_multiple", "cancellable": true,
+            "payload": [
+                "mission_type": "build_multiple", "city_id": 1, "city_name": "방콕", "owned_marble": 2_000_000,
+                "items": [
+                    ["id": "villa", "building_type": "villa", "build_cost": 50_000, "disabled": false],
+                    ["id": "hotel", "building_type": "hotel", "build_cost": 150_000, "disabled": true],
+                ],
+            ],
+        ])
+        let buildRequest = try InteractionRequestParser.parse(build)
+        XCTAssertEqual(buildRequest.items.map(\.id), ["villa", "hotel"])
+        XCTAssertEqual(buildRequest.items.map(\.label), ["별장", "호텔, 선택 불가"])
+        XCTAssertEqual(buildRequest.items.map(\.cost), [50_000, 150_000])
+
+        let travel = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-w", "request_id": "req-w",
+            "action_type": "world_travel_destination", "interaction_type": "select_destination", "cancellable": false,
+            "payload": [
+                "mission_type": "world_travel_destination",
+                "allowed_destinations": [1, 9, 17, 25], "excluded_indices": [2, 3],
+            ],
+        ])
+        let travelRequest = try InteractionRequestParser.parse(travel)
+        XCTAssertEqual(travelRequest.allowedDestinationIndices, [1, 9, 17, 25])
+        XCTAssertEqual(travelRequest.excludedIndices, Set([2, 3]))
+        XCTAssertFalse(travelRequest.cancellable)
+    }
+
+    func testInteractionParserCoversRemainingServer677InteractionTypes() throws {
+        let liquidation = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-l", "request_id": "req-l",
+            "action_type": "liquidation", "interaction_type": "select_multiple", "cancellable": false,
+            "payload": [
+                "mission_type": "liquidation", "required_amount": 500_000, "current_marble": 100_000,
+                "items": [[
+                    "id": "1", "city_id": 1, "city_name": "방콕", "group": "연두",
+                    "buildings": ["빌라"], "sell_value": 450_000, "disabled": false,
+                ]],
+            ],
+        ])
+        let liquidationRequest = try InteractionRequestParser.parse(liquidation)
+        XCTAssertEqual(liquidationRequest.missionType, "liquidation")
+        XCTAssertEqual(liquidationRequest.requiredAmount, 500_000)
+        XCTAssertEqual(liquidationRequest.ownedMarble, 100_000)
+        XCTAssertEqual(liquidationRequest.items.first?.cost, 450_000)
+
+        let olympic = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-o", "request_id": "req-o",
+            "action_type": "olympic_city_select", "interaction_type": "select_one", "cancellable": true,
+            "payload": [
+                "mission_type": "olympic", "current_marble": 1_000_000,
+                "items": [["id": "1", "city_id": 1, "city_name": "방콕", "disabled": false]],
+            ],
+        ])
+        XCTAssertEqual(try InteractionRequestParser.parse(olympic).interactionType, "select_one")
+
+        let fortune = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-card", "request_id": "req-card",
+            "action_type": "fortune_card_response", "interaction_type": "acknowledge", "cancellable": false,
+            "payload": [
+                "mission_type": "fortune_card", "card_id": "card-1",
+                "card_name": "황사", "card_description": "도시의 통행료가 감소합니다.",
+            ],
+        ])
+        let fortuneRequest = try InteractionRequestParser.parse(fortune)
+        XCTAssertEqual(fortuneRequest.interactionType, "acknowledge")
+        XCTAssertEqual(fortuneRequest.cardName, "황사")
+        XCTAssertEqual(fortuneRequest.cardDescription, "도시의 통행료가 감소합니다.")
+
+        let bonus = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-bonus", "request_id": "req-bonus",
+            "action_type": "bonus_game", "interaction_type": "select_one", "cancellable": false,
+            "payload": [
+                "mission_type": "bonus_game", "bonus_game_step": 1, "bonus_game_earned": 0,
+                "items": [
+                    ["id": "coin_front", "action": "coin_front", "disabled": false],
+                    ["id": "coin_back", "action": "coin_back", "disabled": false],
+                ],
+            ],
+        ])
+        XCTAssertEqual(try InteractionRequestParser.parse(bonus).items.map(\.id), ["coin_front", "coin_back"])
+
+        let defense = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-defense", "request_id": "req-defense",
+            "action_type": "defense_response", "interaction_type": "confirm", "cancellable": true,
+            "payload": [
+                "mission_type": "defense", "defense_type": "attack", "attack_type": "yellow_dust",
+                "attacker_player_id": 2, "city_id": 1, "defense_card_name": "천사 카드",
+            ],
+        ])
+        let defenseRequest = try InteractionRequestParser.parse(defense)
+        XCTAssertEqual(defenseRequest.title, "공격 방어")
+        XCTAssertTrue(defenseRequest.cancellable)
+    }
+
+    func testInteractionParserCoversGroupedFortuneAndStartCellBuild() throws {
+        let fortune = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-f", "request_id": "req-f",
+            "action_type": "fortune_selection", "interaction_type": "select_one_per_group", "cancellable": false,
+            "payload": [
+                "mission_type": "fortune_selection", "card_name": "도시 체인지",
+                "groups": [
+                    ["role": "owned_city", "items": [["id": "1", "city_id": 1, "disabled": false]]],
+                    ["role": "opponent_city", "items": [["id": "2", "city_id": 2, "disabled": false]]],
+                ],
+            ],
+        ])
+        let fortuneRequest = try InteractionRequestParser.parse(fortune)
+        XCTAssertEqual(fortuneRequest.groups.map(\.role), ["owned_city", "opponent_city"])
+        XCTAssertEqual(fortuneRequest.cardName, "도시 체인지")
+
+        let startBuild = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-s", "request_id": "req-s",
+            "action_type": "start_cell_build_selection", "interaction_type": "select_city_and_buildings", "cancellable": true,
+            "payload": [
+                "mission_type": "start_cell_build_selection", "owned_marble": 1_500_000,
+                "cities": [[
+                    "city_id": 1, "city_name": "방콕", "group": "연두", "buildings": ["별장"],
+                    "build_options": [
+                        ["id": "building", "building_type": "building", "build_cost": 100_000, "disabled": false],
+                        ["id": "hotel", "building_type": "hotel", "build_cost": 200_000, "disabled": false],
+                    ],
+                ]],
+            ],
+        ])
+        let buildRequest = try InteractionRequestParser.parse(startBuild)
+        XCTAssertEqual(buildRequest.ownedMarble, 1_500_000)
+        XCTAssertEqual(buildRequest.startBuildCities.count, 1)
+        XCTAssertEqual(buildRequest.startBuildCities[0].cityID, 1)
+        XCTAssertEqual(buildRequest.startBuildCities[0].buildOptions.map(\.id), ["building", "hotel"])
+    }
+}
