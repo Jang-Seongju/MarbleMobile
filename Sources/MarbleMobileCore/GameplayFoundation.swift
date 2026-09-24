@@ -102,8 +102,35 @@ public struct GamePlayerSnapshot: Identifiable, Equatable, Sendable {
     public let isStranded: Bool
     public let isBankrupt: Bool
     public let isAI: Bool
+    public let connectionStatus: String?
 
     public var id: Int { playerID }
+
+    public init(
+        playerID: Int,
+        userID: Int?,
+        nickname: String,
+        teamName: String,
+        marble: Int,
+        position: Int,
+        lapCount: Int,
+        isStranded: Bool,
+        isBankrupt: Bool,
+        isAI: Bool,
+        connectionStatus: String? = nil
+    ) {
+        self.playerID = playerID
+        self.userID = userID
+        self.nickname = nickname
+        self.teamName = teamName
+        self.marble = marble
+        self.position = position
+        self.lapCount = lapCount
+        self.isStranded = isStranded
+        self.isBankrupt = isBankrupt
+        self.isAI = isAI
+        self.connectionStatus = connectionStatus
+    }
 }
 
 public struct GameStartedSnapshot: Equatable, Sendable {
@@ -113,6 +140,7 @@ public struct GameStartedSnapshot: Equatable, Sendable {
     public let cities: [GameCityStateSnapshot]
     public let festivalCityIDs: [Int]
     public let boardCatalog: BoardCatalogSnapshot
+    public let staticInformation: StaticInformationCatalogSnapshot
 }
 
 public struct GameStateSnapshot: Equatable, Sendable {
@@ -134,7 +162,8 @@ public enum GameplayParser {
               let rawPlayers = data["players"] as? [[String: Any]],
               let rawCities = data["cities"] as? [[String: Any]],
               let rawFestival = data["festival_city_ids"] as? [Any],
-              let rawBoard = data["board_cells"] as? [[String: Any]]
+              let rawBoard = data["board_cells"] as? [[String: Any]],
+              let rawStaticInformation = data["static_information"] as? [String: Any]
         else { throw GameplayParserError.invalidMessage }
 
         let players = try parsePlayers(rawPlayers)
@@ -150,6 +179,12 @@ public enum GameplayParser {
         else { throw GameplayParserError.invalidMessage }
 
         let board = try BoardCellsParser.parse(["type": "board_cells", "board_cells": rawBoard])
+        let staticInformation: StaticInformationCatalogSnapshot
+        do {
+            staticInformation = try StaticInformationCatalogParser.parse(rawStaticInformation)
+        } catch {
+            throw GameplayParserError.invalidMessage
+        }
         let cities = try parseCities(rawCities)
         return .init(
             yourPlayerID: yourPlayerID,
@@ -157,7 +192,8 @@ public enum GameplayParser {
             players: players,
             cities: cities,
             festivalCityIDs: festival,
-            boardCatalog: board
+            boardCatalog: board,
+            staticInformation: staticInformation
         )
     }
 
@@ -207,30 +243,11 @@ public enum GameplayParser {
         var result: [GameCityStateSnapshot] = []
         result.reserveCapacity(rawCities.count)
         for raw in rawCities {
-            guard let cityID = positiveInt(raw["city_id"]), ids.insert(cityID).inserted,
-                  let cityName = trimmedRequired(raw["city_name"]),
-                  let buildingsRaw = raw["buildings"] as? [Any],
-                  let effectsRaw = raw["city_effect_types"] as? [Any]
+            guard let info = InformationParser.info(raw),
+                  let cityID = info.cityID, cityID > 0, ids.insert(cityID).inserted,
+                  let cityName = info.cityName, !cityName.isEmpty
             else { throw GameplayParserError.invalidMessage }
-            let buildings = buildingsRaw.compactMap { $0 as? String }
-            let effects = effectsRaw.compactMap { $0 as? String }
-            guard buildings.count == buildingsRaw.count, effects.count == effectsRaw.count else {
-                throw GameplayParserError.invalidMessage
-            }
-            let ownerID: Int?
-            if raw["owner_id"] == nil || raw["owner_id"] is NSNull {
-                ownerID = nil
-            } else {
-                guard let parsed = positiveInt(raw["owner_id"]) else { throw GameplayParserError.invalidMessage }
-                ownerID = parsed
-            }
-            result.append(.init(
-                cityID: cityID,
-                cityName: cityName,
-                ownerID: ownerID,
-                buildings: buildings,
-                cityEffectTypes: effects
-            ))
+            result.append(info)
         }
         return result
     }
@@ -259,6 +276,13 @@ public enum GameplayParser {
 
             let stranded = WireScalarParser.exactBool(raw["is_stranded"]) ?? false
             let bankrupt = WireScalarParser.exactBool(raw["is_bankrupt"]) ?? false
+            let connectionStatus: String?
+            if raw["connection_status"] == nil || raw["connection_status"] is NSNull {
+                connectionStatus = nil
+            } else {
+                guard let parsed = raw["connection_status"] as? String else { throw GameplayParserError.invalidMessage }
+                connectionStatus = parsed
+            }
             result.append(.init(
                 playerID: playerID,
                 userID: userID,
@@ -269,7 +293,8 @@ public enum GameplayParser {
                 lapCount: lapCount,
                 isStranded: stranded,
                 isBankrupt: bankrupt,
-                isAI: isAI
+                isAI: isAI,
+                connectionStatus: connectionStatus
             ))
         }
         return result
@@ -312,6 +337,7 @@ public struct InteractionGroupSnapshot: Identifiable, Equatable, Sendable {
 
 public struct StartBuildCitySnapshot: Identifiable, Equatable, Sendable {
     public let cityID: Int
+    public let information: InformationInfo
     public let label: String
     public let buildOptions: [InteractionItemSnapshot]
     public var id: Int { cityID }
@@ -427,13 +453,23 @@ public enum InteractionRequestParser {
         var ids = Set<Int>()
         return try raw.map { city in
             guard let cityID = positiveInt(city["city_id"]), ids.insert(cityID).inserted else { throw InteractionRequestParserError.invalidMessage }
-            let name = optionalString(city["city_name"]) ?? "도시 \(cityID)"
-            let group = optionalString(city["group_name"] ?? city["group"])
-            let buildings = (city["buildings"] as? [String] ?? [])
-            let status = buildings.isEmpty ? "" : ", \(buildings.joined(separator: ", "))"
-            let groupText = group.map { ", \($0)" } ?? ""
+            var informationData = city
+            if informationData["group_name"] == nil, let group = informationData["group"] {
+                informationData["group_name"] = group
+            }
+            guard let information = InformationParser.info(informationData) else { throw InteractionRequestParserError.invalidMessage }
+            let label = InformationCityPresenter.format(
+                information,
+                spec: InformationDisplaySpecs.ownedCityInfo,
+                myPlayerID: nil
+            )
             let options = try parseItems(city["build_options"])
-            return .init(cityID: cityID, label: "\(name)\(groupText)\(status)", buildOptions: options)
+            return .init(
+                cityID: cityID,
+                information: information,
+                label: label.isEmpty ? "도시 \(cityID)" : label,
+                buildOptions: options
+            )
         }
     }
 

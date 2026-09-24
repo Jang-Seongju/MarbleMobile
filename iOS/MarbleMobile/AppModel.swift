@@ -44,9 +44,11 @@ final class AppModel: ObservableObject {
     @Published var roomUpdate: RoomUpdateSnapshot?
     @Published var roomMessages: [String] = []
     @Published var boardCatalog: BoardCatalogSnapshot?
+    @Published var staticInformationCatalog: StaticInformationCatalogSnapshot?
     @Published var boardCursor = BoardCursorState()
     @Published var boardAccessibilityMode: BoardAccessibilityMode = .directTouch
     @Published var boardCostCycle = CityCostCycleState()
+    @Published var gameRotor = GameRotorState()
     @Published var aiSelectionRequest: AIPlayerSelectionRequest?
     @Published var selectedAIIDs: Set<String> = []
     @Published var activeInteraction: InteractionRequestSnapshot?
@@ -69,8 +71,7 @@ final class AppModel: ObservableObject {
     private var isRoomEntryRecoveryPending = false
     private var aiSelectionHistory: [String] = []
     private var activatedInteractionRequestIDs: Set<String> = []
-    private var selectedOpponentTeamIndex = 0
-    private var selectedOpponentMemberIndex = -1
+    private var pendingRotorDirections: [String: [Bool]] = [:]
 
     // LoginWindow가 재로그인/회원가입 왕복에서도 입력 상태를 보존하는 PC 계약을 유지한다.
     @Published var loginUsername = ""
@@ -316,6 +317,19 @@ final class AppModel: ObservableObject {
         boardCatalog?.cell(at: boardCursor.index)
     }
 
+    var currentBoardAccessibilityDescription: String {
+        guard let cell = currentBoardCell else { return "보드 정보가 아직 준비되지 않았습니다." }
+        guard (gameIsActive || gameFinished), cell.isCity, let cityID = cell.cityID,
+              let info = gameCities.first(where: { $0.cityID == cityID })
+        else { return cell.shortDescription }
+        let text = InformationCityPresenter.format(
+            info,
+            spec: InformationDisplaySpecs.cityInfo,
+            myPlayerID: myPlayerID
+        )
+        return text.isEmpty ? cell.shortDescription : text
+    }
+
     func moveBoardCursorForward() {
         guard boardCatalog != nil else {
             announce("보드 정보가 아직 준비되지 않았습니다.")
@@ -323,6 +337,7 @@ final class AppModel: ObservableObject {
         }
         boardCursor.moveNext()
         boardCostCycle.reset()
+        gameRotor.resetUnitBuildingSelection()
         announceCurrentBoardCell()
     }
 
@@ -333,6 +348,7 @@ final class AppModel: ObservableObject {
         }
         boardCursor.movePrevious()
         boardCostCycle.reset()
+        gameRotor.resetUnitBuildingSelection()
         announceCurrentBoardCell()
     }
 
@@ -391,40 +407,213 @@ final class AppModel: ObservableObject {
         }
         boardCursor.jump(to: target)
         boardCostCycle.reset()
+        gameRotor.resetUnitBuildingSelection()
         announceCurrentBoardCell()
     }
 
+    func rotateGameRotorForward() {
+        let category = gameRotor.moveCategoryForward()
+        announce(category.displayName)
+    }
+
+    func rotateGameRotorBackward() {
+        let category = gameRotor.moveCategoryBackward()
+        announce(category.displayName)
+    }
+
+    func moveGameRotorSelectionForward() {
+        moveGameRotorSelection(forward: true)
+    }
+
+    func moveGameRotorSelectionBackward() {
+        moveGameRotorSelection(forward: false)
+    }
+
+    func moveGameRotorDetailForward() {
+        moveGameRotorDetail(forward: true)
+    }
+
+    func moveGameRotorDetailBackward() {
+        moveGameRotorDetail(forward: false)
+    }
+
+    private func moveGameRotorSelection(forward: Bool) {
+        switch gameRotor.category {
+        case .playerInformation:
+            guard let target = gameRotor.movePlayerTarget(
+                forward: forward,
+                myPlayerID: myPlayerID,
+                players: gamePlayers
+            ) else {
+                announce("플레이어 정보 없음")
+                return
+            }
+            announce(playerRotorTargetName(target))
+        case .monopolyInformation:
+            announce(gameRotor.moveMonopolyKind(forward: forward).displayName)
+        case .cityStatusInformation:
+            announce(gameRotor.moveCityStatusKind(forward: forward).displayName)
+        case .unitCostInformation:
+            guard let cityID = currentBoardCell?.cityID, currentBoardCell?.isCity == true else {
+                announce("도시가 아닙니다")
+                return
+            }
+            guard let catalog = staticInformationCatalog else {
+                announce("정적 정보가 아직 준비되지 않았습니다.")
+                return
+            }
+            let types = catalog.buildingTypes(cityID: cityID)
+            guard let type = gameRotor.moveUnitBuildingType(forward: forward, availableTypes: types) else {
+                announce("건물 정보 없음")
+                return
+            }
+            announce(InformationResultPresenter.buildingType(type))
+        }
+    }
+
+    private func moveGameRotorDetail(forward: Bool) {
+        switch gameRotor.category {
+        case .playerInformation:
+            requestRotorPlayerCity(forward: forward)
+        case .monopolyInformation:
+            guard gameIsActive || gameFinished else {
+                announce("게임이 시작되지 않았습니다.")
+                return
+            }
+            let query = gameRotor.monopolyKind == .achieved
+                ? "achieved_monopoly_status"
+                : "ending_monopoly_alerts"
+            pendingRotorDirections[query, default: []].append(forward)
+            socket.send(WireMessages.informationQuery(queryType: query))
+        case .cityStatusInformation:
+            guard gameIsActive || gameFinished else {
+                announce("게임이 시작되지 않았습니다.")
+                return
+            }
+            let query: String
+            switch gameRotor.cityStatusKind {
+            case .festival: query = "festival_city_list"
+            case .olympic: query = "olympic_city"
+            case .activeEffect: query = "active_city_effects"
+            }
+            pendingRotorDirections[query, default: []].append(forward)
+            socket.send(WireMessages.informationQuery(queryType: query))
+        case .unitCostInformation:
+            requestRotorUnitCost(forward: forward)
+        }
+    }
+
     func requestSelectedPlayerInfo() {
-        guard gameIsActive, let myPlayerID else {
+        guard gameIsActive || gameFinished else {
             announce("게임이 시작되지 않았습니다.")
             return
         }
-        var order: [String] = []
-        var grouped: [String: [GamePlayerSnapshot]] = [:]
-        for player in gamePlayers where player.playerID != myPlayerID {
-            if grouped[player.teamName] == nil {
-                order.append(player.teamName)
-                grouped[player.teamName] = []
-            }
-            grouped[player.teamName, default: []].append(player)
-        }
-        guard !order.isEmpty else {
-            announce("상대 플레이어 없음")
+        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+        guard let target = gameRotor.playerTarget else {
+            announce("플레이어 정보 없음")
             return
         }
-        selectedOpponentTeamIndex %= order.count
-        let team = grouped[order[selectedOpponentTeamIndex]] ?? []
-        guard !team.isEmpty else { announce("상대 플레이어 없음"); return }
-        selectedOpponentMemberIndex = (selectedOpponentMemberIndex + 1) % team.count
-        let player = team[selectedOpponentMemberIndex]
-        socket.send(WireMessages.informationQuery(
-            queryType: "player_info",
-            payload: ["opponent_player_id": player.playerID]
-        ))
+        switch target {
+        case .unowned:
+            announce("플레이어 정보 없음")
+        case .player(let playerID):
+            if playerID == myPlayerID {
+                socket.send(WireMessages.informationQuery(queryType: "player_info"))
+            } else {
+                socket.send(WireMessages.informationQuery(
+                    queryType: "player_info",
+                    payload: ["opponent_player_id": playerID]
+                ))
+            }
+        }
+    }
+
+    private func playerRotorTargetName(_ target: GameRotorPlayerTarget) -> String {
+        switch target {
+        case .unowned:
+            return "미소유"
+        case .player(let playerID):
+            if playerID == myPlayerID { return "당신" }
+            return gamePlayers.first(where: { $0.playerID == playerID })?.nickname ?? "플레이어 \(playerID)"
+        }
+    }
+
+    private func requestRotorPlayerCity(forward: Bool) {
+        guard gameIsActive || gameFinished else {
+            announce("게임이 시작되지 않았습니다.")
+            return
+        }
+        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+        guard let target = gameRotor.playerTarget else {
+            announce("플레이어 정보 없음")
+            return
+        }
+        switch target {
+        case .unowned:
+            let index = gameRotor.nextUnownedCityIndex(forward: forward)
+            socket.send(WireMessages.informationQuery(
+                queryType: "city_info",
+                payload: ["filter": "unowned", "index": index]
+            ))
+        case .player(let playerID):
+            if playerID == myPlayerID {
+                let index = gameRotor.nextOwnedCityIndex(forward: forward)
+                socket.send(WireMessages.informationQuery(
+                    queryType: "city_info",
+                    payload: ["filter": "owned", "index": index]
+                ))
+            } else {
+                let index = gameRotor.nextOpponentCityIndex(forward: forward)
+                socket.send(WireMessages.informationQuery(
+                    queryType: "city_info",
+                    payload: [
+                        "filter": "opponent",
+                        "index": index,
+                        "opponent_player_id": playerID,
+                    ]
+                ))
+            }
+        }
+    }
+
+    private func requestRotorUnitCost(forward: Bool) {
+        guard let cell = currentBoardCell, cell.isCity, let cityID = cell.cityID else {
+            announce("도시가 아닙니다")
+            return
+        }
+        guard let catalog = staticInformationCatalog else {
+            announce("정적 정보가 아직 준비되지 않았습니다.")
+            return
+        }
+        let types = catalog.buildingTypes(cityID: cityID)
+        guard let buildingType = gameRotor.currentUnitBuildingType(availableTypes: types) else {
+            announce("건물 정보 없음")
+            return
+        }
+        let valueKind = gameRotor.moveUnitValueKind(forward: forward)
+        if gameIsActive || gameFinished {
+            socket.send(WireMessages.informationQuery(
+                queryType: "building_value_info",
+                cityID: cityID,
+                payload: [
+                    "building_type": buildingType,
+                    "value_field": valueKind.valueField,
+                ]
+            ))
+            return
+        }
+        let info = catalog.buildingValue(cityID: cityID, buildingType: buildingType)
+        let text = InformationResultPresenter.format(
+            queryType: "building_value_info",
+            result: InformationResult(info: info),
+            myPlayerID: myPlayerID,
+            valueField: valueKind.valueField
+        ) ?? "건물 정보를 찾을 수 없습니다."
+        announce(text)
     }
 
     private func announceCurrentBoardCell() {
-        announce(currentBoardCell?.shortDescription ?? "현재 칸 정보를 찾을 수 없습니다.")
+        announce(currentBoardAccessibilityDescription)
     }
 
     private func queryBoardCityCost(_ kind: CityCostQueryKind) {
@@ -654,6 +843,9 @@ final class AppModel: ObservableObject {
             gameFinished = false
             myPlayerID = snapshot.yourPlayerID
             currentPlayerID = snapshot.currentPlayerID
+            staticInformationCatalog = snapshot.staticInformation
+            gameRotor.reset()
+            gameRotor.synchronizePlayers(myPlayerID: snapshot.yourPlayerID, players: snapshot.players)
             currentTurnGeneration = nil
             nextTurnCommand = "roll_dice"
             turnCommandWindowOpen = false
@@ -682,6 +874,7 @@ final class AppModel: ObservableObject {
             let snapshot = try GameplayParser.gameState(data)
             gamePlayers = snapshot.players
             gameCities = snapshot.cities
+            gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: snapshot.players)
             if let current = snapshot.currentPlayerID { currentPlayerID = current }
         } catch {
             return
@@ -757,6 +950,7 @@ final class AppModel: ObservableObject {
                   playerID == myPlayerID {
             boardCursor.jump(to: index)
             boardCostCycle.reset()
+            gameRotor.resetUnitBuildingSelection()
         }
 
         let context = GamePresentationContext(
@@ -811,50 +1005,121 @@ final class AppModel: ObservableObject {
         boardAccessibilityMode = .directTouch
     }
 
+    private func dequeuePendingRotorDirection(for queryType: String) -> Bool? {
+        guard var queue = pendingRotorDirections[queryType], !queue.isEmpty else { return nil }
+        let value = queue.removeFirst()
+        if queue.isEmpty { pendingRotorDirections.removeValue(forKey: queryType) }
+        else { pendingRotorDirections[queryType] = queue }
+        return value
+    }
+
     private func formatInformationResponse(_ data: [String: Any]) -> String? {
         guard let queryType = data["query_type"] as? String,
               let payload = data["payload"] as? [String: Any],
-              let result = payload["result"] as? [String: Any] else { return nil }
-        let info = result["info"] as? [String: Any]
-        func groupedMarble(_ value: Any?) -> String {
-            guard let amount = WireScalarParser.exactInt(value) else { return "0마블" }
-            let formatter = NumberFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.numberStyle = .decimal
-            formatter.usesGroupingSeparator = true
-            formatter.groupingSeparator = ","
-            formatter.groupingSize = 3
-            return "\(formatter.string(from: NSNumber(value: amount)) ?? String(amount))마블"
-        }
-        if queryType == "city_cost" {
-            guard let info else { return "비용 정보를 찾을 수 없습니다." }
-            let city = (info["city_name"] as? String) ?? "도시"
-            let kind = info["cost_type"] as? String
-            if kind == "toll" { return "\(city) 통행료 \(groupedMarble(info["amount"]))" }
-            if kind == "acquisition" {
-                if info["amount"] == nil || info["amount"] is NSNull { return "\(city) 인수불가" }
-                return "\(city) 인수 비용 \(groupedMarble(info["amount"]))"
+              let result = InformationParser.result(payload["result"])
+        else { return nil }
+
+        if queryType == "city_info", let filter = payload["filter"] as? String {
+            if let correctedIndex = result.index {
+                gameRotor.updateFilteredCityIndex(filter: filter, correctedIndex: correctedIndex)
             }
-            if kind == "sale" { return "\(city) 매각 대금 \(groupedMarble(info["amount"]))" }
+            if let info = result.info { jumpBoardToInformationCity(info) }
         }
-        if queryType == "player_info" {
-            guard let info else { return "플레이어 정보를 찾을 수 없습니다." }
-            var parts: [String] = []
-            let pid = WireScalarParser.exactInt(info["player_id"])
-            if pid != myPlayerID, let nickname = info["nickname"] as? String { parts.append(nickname) }
-            parts.append(groupedMarble(info["marble"]))
-            let cityCount = WireScalarParser.exactInt(info["owned_city_count"]) ?? 0
-            parts.append("소유 도시 \(cityCount)곳")
-            if let groups = info["group_names"] as? [String] { parts.append(contentsOf: groups.map { "\($0) 독점" }) }
-            if WireScalarParser.exactBool(info["has_olympic"]) == true,
-               let count = WireScalarParser.exactInt(info["olympic_count"]), count > 0 { parts.append("올림픽 \(count)회") }
-            if pid == myPlayerID, let card = info["held_card_name"] as? String, !card.isEmpty { parts.append("보관 카드 \(card)") }
-            if WireScalarParser.exactBool(info["is_bankrupt"]) == true { parts.append("파산") }
-            let status = info["connection_status"] as? String
-            if status == "recovering" || status == "disconnected" { parts.append("접속 끊김") }
-            return parts.isEmpty ? "플레이어 정보를 찾을 수 없습니다." : parts.joined(separator: " ")
+
+        if queryType == "achieved_monopoly_status" || queryType == "ending_monopoly_alerts" {
+            let forward = dequeuePendingRotorDirection(for: queryType) ?? true
+            let kind: GameRotorMonopolyKind = queryType == "achieved_monopoly_status" ? .achieved : .endingAlert
+            let index = gameRotor.nextMonopolyItemIndex(kind: kind, forward: forward, count: result.items.count)
+            return InformationResultPresenter.format(
+                queryType: queryType,
+                result: result,
+                myPlayerID: myPlayerID,
+                index: index
+            )
         }
-        return nil
+
+        if queryType == "festival_city_list" || queryType == "olympic_city" || queryType == "active_city_effects" {
+            if let forward = dequeuePendingRotorDirection(for: queryType) {
+                return formatRotorCityStatusResponse(
+                    queryType: queryType,
+                    result: result,
+                    forward: forward
+                )
+            }
+        }
+
+        let asBuildingStatus = payload["view"] as? String == "building_status"
+        return InformationResultPresenter.format(
+            queryType: queryType,
+            result: result,
+            myPlayerID: myPlayerID,
+            valueField: payload["value_field"] as? String,
+            filterType: payload["filter"] as? String,
+            asBuildingStatus: asBuildingStatus
+        )
+    }
+
+    private func formatRotorCityStatusResponse(
+        queryType: String,
+        result: InformationResult,
+        forward: Bool
+    ) -> String? {
+        let selectedInfo: InformationInfo?
+        switch queryType {
+        case "festival_city_list":
+            guard !result.items.isEmpty else {
+                return InformationResultPresenter.format(
+                    queryType: queryType, result: result, myPlayerID: myPlayerID
+                )
+            }
+            let index = gameRotor.nextCityStatusIndex(kind: .festival, forward: forward, count: result.items.count)
+            selectedInfo = result.items[index]
+        case "active_city_effects":
+            guard !result.items.isEmpty else {
+                return InformationResultPresenter.format(
+                    queryType: queryType, result: result, myPlayerID: myPlayerID
+                )
+            }
+            let index = gameRotor.nextCityStatusIndex(kind: .activeEffect, forward: forward, count: result.items.count)
+            selectedInfo = result.items[index]
+        case "olympic_city":
+            selectedInfo = result.info
+            if selectedInfo == nil {
+                return InformationResultPresenter.format(
+                    queryType: queryType, result: result, myPlayerID: myPlayerID
+                )
+            }
+        default:
+            return nil
+        }
+
+        guard let selectedInfo else { return nil }
+        jumpBoardToInformationCity(selectedInfo)
+        guard let cityID = selectedInfo.cityID else {
+            return InformationResultPresenter.format(
+                queryType: queryType, result: result, myPlayerID: myPlayerID
+            )
+        }
+        if let fullInfo = gameCities.first(where: { $0.cityID == cityID }) {
+            let text = InformationCityPresenter.format(
+                fullInfo,
+                spec: InformationDisplaySpecs.cityInfo,
+                myPlayerID: myPlayerID
+            )
+            if !text.isEmpty { return text }
+        }
+        return InformationResultPresenter.format(
+            queryType: queryType, result: result, myPlayerID: myPlayerID
+        )
+    }
+
+    private func jumpBoardToInformationCity(_ info: InformationInfo) {
+        guard let cityID = info.cityID,
+              let index = boardCatalog?.cells.first(where: { $0.cityID == cityID })?.index
+        else { return }
+        boardCursor.jump(to: index)
+        boardCostCycle.reset()
+        gameRotor.resetUnitBuildingSelection()
     }
 
     func createTeamFromDraft() {
@@ -1073,9 +1338,11 @@ final class AppModel: ObservableObject {
         roomUpdate = nil
         roomMessages = []
         boardCatalog = nil
+        staticInformationCatalog = nil
         boardCursor.reset()
         boardAccessibilityMode = .directTouch
         boardCostCycle.reset()
+        gameRotor.reset()
         clearGameplayState()
         teamNameDraft = session?.identity.nickname ?? ""
         chatDraft = ""
@@ -1087,12 +1354,14 @@ final class AppModel: ObservableObject {
     private func handleBoardCells(_ data: [String: Any]) {
         guard roomEntry != nil else { return }
         do {
-            let snapshot = try BoardCellsParser.parse(data)
-            boardCatalog = snapshot
-            if snapshot.cell(at: boardCursor.index) == nil {
+            let snapshot = try BoardBootstrapParser.parse(data)
+            boardCatalog = snapshot.boardCatalog
+            staticInformationCatalog = snapshot.staticInformation
+            if snapshot.boardCatalog.cell(at: boardCursor.index) == nil {
                 boardCursor.reset()
             }
             boardCostCycle.reset()
+            gameRotor.resetUnitBuildingSelection()
         } catch {
             // PC 일반 room 경로와 같이 malformed 정적 보드는 기존 정상 상태를
             // 임의 데이터로 덮어쓰지 않고 무시한다.
@@ -1156,8 +1425,8 @@ final class AppModel: ObservableObject {
         turnCommandWindowOpen = false
         turnActionStarted = false
         isGameStartPending = false
-        selectedOpponentTeamIndex = 0
-        selectedOpponentMemberIndex = -1
+        gameRotor.reset()
+        pendingRotorDirections = [:]
     }
 
     private func clearRoomState() {
@@ -1166,9 +1435,11 @@ final class AppModel: ObservableObject {
         roomUpdate = nil
         roomMessages = []
         boardCatalog = nil
+        staticInformationCatalog = nil
         boardCursor.reset()
         boardAccessibilityMode = .directTouch
         boardCostCycle.reset()
+        gameRotor.reset()
         clearGameplayState()
         teamNameDraft = ""
         chatDraft = ""

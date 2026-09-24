@@ -19,6 +19,7 @@ struct GameRoomView: View {
                     messages: model.roomMessages,
                     catalog: model.boardCatalog,
                     cursorIndex: model.boardCursor.index,
+                    currentCellDescription: model.currentBoardAccessibilityDescription,
                     directTouchEnabled: model.isBoardDirectTouchEnabled && voiceOverEnabled,
                     onPreviousCell: model.moveBoardCursorBackward,
                     onNextCell: model.moveBoardCursorForward,
@@ -29,6 +30,12 @@ struct GameRoomView: View {
                     onMagicTap: model.performBoardMagicTap,
                     onEscape: { showLeaveConfirmation = true },
                     onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
+                    onRotorForward: model.rotateGameRotorForward,
+                    onRotorBackward: model.rotateGameRotorBackward,
+                    onPreviousRotorSelection: model.moveGameRotorSelectionBackward,
+                    onNextRotorSelection: model.moveGameRotorSelectionForward,
+                    onPreviousRotorDetail: model.moveGameRotorDetailBackward,
+                    onNextRotorDetail: model.moveGameRotorDetailForward,
                     onLineA: { model.jumpToBoardLine("A") },
                     onLineB: { model.jumpToBoardLine("B") },
                     onLineC: { model.jumpToBoardLine("C") },
@@ -171,6 +178,7 @@ private struct GameBoardShell: View {
     let messages: [String]
     let catalog: BoardCatalogSnapshot?
     let cursorIndex: Int
+    let currentCellDescription: String
     let directTouchEnabled: Bool
     let onPreviousCell: () -> Void
     let onNextCell: () -> Void
@@ -181,14 +189,16 @@ private struct GameBoardShell: View {
     let onMagicTap: () -> Void
     let onEscape: () -> Void
     let onSelectedPlayerInfo: () -> Void
+    let onRotorForward: () -> Void
+    let onRotorBackward: () -> Void
+    let onPreviousRotorSelection: () -> Void
+    let onNextRotorSelection: () -> Void
+    let onPreviousRotorDetail: () -> Void
+    let onNextRotorDetail: () -> Void
     let onLineA: () -> Void
     let onLineB: () -> Void
     let onLineC: () -> Void
     let onLineD: () -> Void
-
-    private var currentDescription: String {
-        catalog?.cell(at: cursorIndex)?.shortDescription ?? "보드 정보가 아직 준비되지 않았습니다."
-    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -215,7 +225,7 @@ private struct GameBoardShell: View {
 
                 if directTouchEnabled {
                     GameBoardDirectTouchSurface(
-                        currentCellDescription: currentDescription,
+                        currentCellDescription: currentCellDescription,
                         onPreviousCell: onPreviousCell,
                         onNextCell: onNextCell,
                         onPreviousCityCost: onPreviousCityCost,
@@ -224,6 +234,12 @@ private struct GameBoardShell: View {
                         onMagicTap: onMagicTap,
                         onEscape: onEscape,
                         onSelectedPlayerInfo: onSelectedPlayerInfo,
+                        onRotorForward: onRotorForward,
+                        onRotorBackward: onRotorBackward,
+                        onPreviousRotorSelection: onPreviousRotorSelection,
+                        onNextRotorSelection: onNextRotorSelection,
+                        onPreviousRotorDetail: onPreviousRotorDetail,
+                        onNextRotorDetail: onNextRotorDetail,
                         onLineA: onLineA,
                         onLineB: onLineB,
                         onLineC: onLineC,
@@ -238,7 +254,7 @@ private struct GameBoardShell: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("게임 보드")
-        .accessibilityValue(currentDescription)
+        .accessibilityValue(currentCellDescription)
         .accessibilityHint(directTouchEnabled
             ? "다이렉트 터치 사용 중"
             : "두 번 탭하면 다이렉트 터치를 시작합니다.")

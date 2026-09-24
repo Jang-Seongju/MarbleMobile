@@ -221,3 +221,29 @@ public struct CityCostCycleState: Equatable, Sendable {
         selectedIndex = nil
     }
 }
+
+public struct BoardBootstrapSnapshot: Equatable, Sendable {
+    public let boardCatalog: BoardCatalogSnapshot
+    public let staticInformation: StaticInformationCatalogSnapshot
+
+    public init(boardCatalog: BoardCatalogSnapshot, staticInformation: StaticInformationCatalogSnapshot) {
+        self.boardCatalog = boardCatalog
+        self.staticInformation = staticInformation
+    }
+}
+
+public enum BoardBootstrapParser {
+    public static func parse(_ data: [String: Any]) throws -> BoardBootstrapSnapshot {
+        let board = try BoardCellsParser.parse(data)
+        guard let rawStatic = data["static_information"] as? [String: Any] else {
+            throw BoardCellsParserError.invalidMessage
+        }
+        let staticInformation: StaticInformationCatalogSnapshot
+        do {
+            staticInformation = try StaticInformationCatalogParser.parse(rawStatic)
+        } catch {
+            throw BoardCellsParserError.invalidMessage
+        }
+        return BoardBootstrapSnapshot(boardCatalog: board, staticInformation: staticInformation)
+    }
+}

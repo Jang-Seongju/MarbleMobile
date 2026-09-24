@@ -554,6 +554,45 @@ extension Phase1CoreTests {
 }
 
 extension Phase1CoreTests {
+
+    private func staticInformationPayloadForDirectTouchTests() -> [String: Any] {
+        let items: [[String: Any]] = [
+            [
+                "city_id": 2,
+                "city_name": "도시 2",
+                "city_description": "도시 2 설명",
+            ],
+            [
+                "city_id": 2,
+                "city_name": "도시 2",
+                "city_type": "general",
+                "building_type": "땅",
+                "build_cost": 20_000,
+                "toll_value": 2_000,
+                "acquisition_value": 30_000,
+                "sell_value": 10_000,
+            ],
+            [
+                "city_id": 2,
+                "city_name": "도시 2",
+                "city_type": "general",
+                "building_type": "빌라",
+                "build_cost": 50_000,
+                "toll_value": 5_000,
+                "acquisition_value": 75_000,
+                "sell_value": 25_000,
+            ],
+        ]
+        return [
+            "info": NSNull(),
+            "items": items,
+            "empty_reason": NSNull(),
+            "subject_nickname": NSNull(),
+            "index": NSNull(),
+            "total_count": items.count,
+        ]
+    }
+
     private func boardCellsPayloadForDirectTouchTests() -> [String: Any] {
         var cells: [[String: Any]] = []
         for index in 1...32 {
@@ -750,7 +789,7 @@ extension Phase1CoreTests {
             "festival_city_ids": [1, 2, 3],
             "cities": [],
             "board_cells": cells,
-            "static_information": ["items": []],
+            "static_information": staticInformationPayloadForDirectTouchTests(),
         ])
         let started = try GameplayParser.gameStarted(payload)
         XCTAssertEqual(started.yourPlayerID, 1)
@@ -759,6 +798,9 @@ extension Phase1CoreTests {
         XCTAssertFalse(started.players[0].isStranded)
         XCTAssertFalse(started.players[0].isBankrupt)
         XCTAssertTrue(started.players[1].isAI)
+        XCTAssertEqual(started.players[0].connectionStatus, "connected")
+        XCTAssertNil(started.players[1].connectionStatus)
+        XCTAssertEqual(started.staticInformation.buildingTypes(cityID: 2), ["땅", "빌라"])
         XCTAssertEqual(started.festivalCityIDs, [1, 2, 3])
         XCTAssertEqual(started.boardCatalog.cells.count, 32)
     }
@@ -925,7 +967,179 @@ extension Phase1CoreTests {
         XCTAssertEqual(buildRequest.ownedMarble, 1_500_000)
         XCTAssertEqual(buildRequest.startBuildCities.count, 1)
         XCTAssertEqual(buildRequest.startBuildCities[0].cityID, 1)
+        XCTAssertEqual(buildRequest.startBuildCities[0].label, "방콕, 별장, 연두")
+        XCTAssertEqual(buildRequest.startBuildCities[0].information.groupName, "연두")
         XCTAssertEqual(buildRequest.startBuildCities[0].buildOptions.map(\.id), ["building", "hotel"])
+    }
+
+    func testInformationInfoParserRetainsServer677CityStateFields() throws {
+        let raw = try roundTripJSON([
+            "city_id": 7,
+            "city_name": "방콕",
+            "city_type": "general",
+            "owner_id": 3,
+            "owner_nickname": "성주",
+            "group_name": "연두",
+            "buildings": ["빌라", "빌딩"],
+            "city_effect_types": ["yellow_dust", "plague"],
+            "is_color_monopoly": true,
+            "is_festival": true,
+            "has_olympic": true,
+            "olympic_count": 2,
+        ])
+        let info = try XCTUnwrap(InformationParser.info(raw))
+        XCTAssertEqual(info.cityID, 7)
+        XCTAssertEqual(info.cityName, "방콕")
+        XCTAssertEqual(info.ownerID, 3)
+        XCTAssertEqual(info.ownerNickname, "성주")
+        XCTAssertEqual(info.groupName, "연두")
+        XCTAssertEqual(info.buildings, ["빌라", "빌딩"])
+        XCTAssertEqual(info.cityEffectTypes, ["yellow_dust", "plague"])
+        XCTAssertEqual(info.isColorMonopoly, true)
+        XCTAssertEqual(info.isFestival, true)
+        XCTAssertEqual(info.hasOlympic, true)
+        XCTAssertEqual(info.olympicCount, 2)
+    }
+
+    func testInformationCityPresenterMatchesClient393FieldOrder() {
+        let info = InformationInfo(
+            cityID: 7,
+            cityName: "방콕",
+            ownerID: 3,
+            ownerNickname: "성주",
+            groupName: "연두",
+            buildings: ["빌라"],
+            cityEffectTypes: ["yellow_dust"],
+            isColorMonopoly: true,
+            isFestival: true,
+            hasOlympic: true,
+            olympicCount: 2
+        )
+        XCTAssertEqual(
+            InformationCityPresenter.format(info, myPlayerID: 3),
+            "방콕, 빌라, 연두, 독점, 올림픽 2회, 황사, 축제, 내 소유"
+        )
+        XCTAssertEqual(
+            InformationCityPresenter.format(info, myPlayerID: 1),
+            "방콕, 빌라, 연두, 독점, 올림픽 2회, 황사, 축제, 성주 소유"
+        )
+    }
+
+    func testInformationPlayerPresenterKeepsSelfOpponentAndDisconnectedSemantics() {
+        let selfInfo = InformationInfo(
+            playerID: 3,
+            nickname: "성주",
+            marble: 628_000,
+            ownedCityCount: 9,
+            connectionStatus: "connected",
+            heldCardName: "무인도 탈출 카드"
+        )
+        XCTAssertEqual(
+            InformationResultPresenter.format(
+                queryType: "player_info",
+                result: InformationResult(info: selfInfo),
+                myPlayerID: 3
+            ),
+            "628,000마블 소유 도시 9곳 보관 카드 무인도 탈출 카드"
+        )
+
+        let opponent = InformationInfo(
+            playerID: 4,
+            nickname: "알바스찬",
+            marble: 628_000,
+            ownedCityCount: 9,
+            connectionStatus: "recovering"
+        )
+        XCTAssertEqual(
+            InformationResultPresenter.format(
+                queryType: "player_info",
+                result: InformationResult(info: opponent),
+                myPlayerID: 3
+            ),
+            "알바스찬 628,000마블 소유 도시 9곳 접속 끊김"
+        )
+    }
+
+    func testStaticInformationCatalogPreservesServerBuildingOrder() throws {
+        let catalog = try StaticInformationCatalogParser.parse(staticInformationPayloadForDirectTouchTests())
+        XCTAssertEqual(catalog.buildingTypes(cityID: 2), ["땅", "빌라"])
+        XCTAssertEqual(catalog.cityDescription(cityID: 2)?.cityDescription, "도시 2 설명")
+        XCTAssertEqual(catalog.buildingValue(cityID: 2, buildingType: "빌라")?.buildCost, 50_000)
+    }
+
+    func testBoardBootstrapParsesBoardAndStaticInformationAtomically() throws {
+        var payload = boardCellsPayloadForDirectTouchTests()
+        payload["static_information"] = staticInformationPayloadForDirectTouchTests()
+        let bootstrap = try BoardBootstrapParser.parse(payload)
+        XCTAssertEqual(bootstrap.boardCatalog.cells.count, 32)
+        XCTAssertEqual(bootstrap.staticInformation.buildingTypes(cityID: 2), ["땅", "빌라"])
+
+        var missingStatic = boardCellsPayloadForDirectTouchTests()
+        missingStatic.removeValue(forKey: "static_information")
+        XCTAssertThrowsError(try BoardBootstrapParser.parse(missingStatic))
+    }
+
+    func testGameRotorPlayerOrderStartsAtSelfAndPlacesUnownedLast() {
+        let players = [1, 2, 3, 4].map { id in
+            GamePlayerSnapshot(
+                playerID: id,
+                userID: id,
+                nickname: "P\(id)",
+                teamName: "P\(id)",
+                marble: 2_000_000,
+                position: 1,
+                lapCount: 0,
+                isStranded: false,
+                isBankrupt: false,
+                isAI: false
+            )
+        }
+        var rotor = GameRotorState()
+        rotor.synchronizePlayers(myPlayerID: 3, players: players)
+        XCTAssertEqual(rotor.playerTarget, .player(3))
+        XCTAssertEqual(
+            rotor.playerTargets(myPlayerID: 3, players: players),
+            [.player(3), .player(4), .player(1), .player(2), .unowned]
+        )
+        XCTAssertEqual(rotor.movePlayerTarget(forward: false, myPlayerID: 3, players: players), .unowned)
+        XCTAssertEqual(rotor.movePlayerTarget(forward: true, myPlayerID: 3, players: players), .player(3))
+        XCTAssertEqual(rotor.movePlayerTarget(forward: true, myPlayerID: 3, players: players), .player(4))
+        XCTAssertEqual(rotor.nextOpponentCityIndex(forward: true), 0)
+        XCTAssertEqual(rotor.nextOpponentCityIndex(forward: true), 1)
+        XCTAssertEqual(rotor.movePlayerTarget(forward: true, myPlayerID: 3, players: players), .player(1))
+        XCTAssertEqual(rotor.nextOpponentCityIndex(forward: true), 0)
+    }
+
+    func testGameRotorCategoryAndChildCyclesAreDeterministic() {
+        var rotor = GameRotorState()
+        XCTAssertEqual(rotor.category, .playerInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .monopolyInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .cityStatusInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .unitCostInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .playerInformation)
+        XCTAssertEqual(rotor.moveCategoryBackward(), .unitCostInformation)
+
+        XCTAssertEqual(rotor.moveMonopolyKind(forward: true), .endingAlert)
+        XCTAssertEqual(rotor.moveMonopolyKind(forward: true), .achieved)
+        XCTAssertEqual(rotor.moveCityStatusKind(forward: true), .olympic)
+        XCTAssertEqual(rotor.moveCityStatusKind(forward: true), .activeEffect)
+        XCTAssertEqual(rotor.moveCityStatusKind(forward: true), .festival)
+    }
+
+    func testGameRotorUnitCostUsesServerTypeOrderAndDownMeansForward() {
+        var rotor = GameRotorState()
+        let types = ["땅", "빌라", "빌딩"]
+        XCTAssertEqual(rotor.currentUnitBuildingType(availableTypes: types), "땅")
+        XCTAssertEqual(rotor.moveUnitBuildingType(forward: true, availableTypes: types), "빌라")
+        XCTAssertEqual(rotor.moveUnitBuildingType(forward: false, availableTypes: types), "땅")
+
+        rotor.resetUnitBuildingSelection()
+        XCTAssertEqual(rotor.moveUnitValueKind(forward: true), .buildCost)
+        XCTAssertEqual(rotor.moveUnitValueKind(forward: true), .tollValue)
+        XCTAssertEqual(rotor.moveUnitValueKind(forward: false), .buildCost)
+
+        rotor.resetUnitBuildingSelection()
+        XCTAssertEqual(rotor.moveUnitValueKind(forward: false), .sellValue)
     }
 
     private func presentationContextForAudioTests() -> GamePresentationContext {

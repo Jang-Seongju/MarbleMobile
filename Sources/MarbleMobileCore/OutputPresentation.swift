@@ -80,21 +80,9 @@ public struct PresentationPlan: Equatable, Sendable {
     }
 }
 
-public struct GameCityStateSnapshot: Equatable, Sendable {
-    public let cityID: Int
-    public let cityName: String
-    public let ownerID: Int?
-    public let buildings: [String]
-    public let cityEffectTypes: [String]
-
-    public init(cityID: Int, cityName: String, ownerID: Int?, buildings: [String], cityEffectTypes: [String]) {
-        self.cityID = cityID
-        self.cityName = cityName
-        self.ownerID = ownerID
-        self.buildings = buildings
-        self.cityEffectTypes = cityEffectTypes
-    }
-}
+/// game_state.cities는 server(677)의 CITY_INFO_SPEC으로 직렬화된
+/// InformationInfo 그 자체다. 모바일 전용 도시 DTO를 두지 않는다.
+public typealias GameCityStateSnapshot = InformationInfo
 
 public struct GamePresentationContext: Equatable, Sendable {
     public let localPlayerID: Int?
@@ -127,7 +115,7 @@ public struct GamePresentationContext: Equatable, Sendable {
 
     public func cityName(_ cityID: Int?) -> String {
         guard let cityID else { return "알 수 없는 도시" }
-        if let state = cities.first(where: { $0.cityID == cityID }), !state.cityName.isEmpty { return state.cityName }
+        if let state = cities.first(where: { $0.cityID == cityID }), let name = state.cityName, !name.isEmpty { return name }
         if let cell = boardCatalog?.cells.first(where: { $0.cityID == cityID }) { return cell.name }
         return "도시 \(cityID)"
     }
