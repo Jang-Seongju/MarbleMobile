@@ -1626,3 +1626,45 @@ extension Phase1CoreTests {
     }
 
 }
+
+
+extension Phase1CoreTests {
+    func testAIRemainderOutputPolicyMatchesPCBoundary() {
+        func player(_ id: Int, ai: Bool, bankrupt: Bool) -> GamePlayerSnapshot {
+            GamePlayerSnapshot(
+                playerID: id,
+                userID: ai ? nil : id,
+                nickname: "P\(id)",
+                teamName: "",
+                marble: 0,
+                position: 1,
+                lapCount: 0,
+                isStranded: false,
+                isBankrupt: bankrupt,
+                isAI: ai
+            )
+        }
+
+        XCTAssertFalse(AIRemainderOutputPolicy.shouldSuppressGameplayAudio(
+            players: [player(1, ai: false, bankrupt: false), player(2, ai: true, bankrupt: false)],
+            gameInProgress: true
+        ))
+        XCTAssertTrue(AIRemainderOutputPolicy.shouldSuppressGameplayAudio(
+            players: [
+                player(1, ai: false, bankrupt: true),
+                player(2, ai: false, bankrupt: true),
+                player(3, ai: true, bankrupt: false),
+                player(4, ai: true, bankrupt: true),
+            ],
+            gameInProgress: true
+        ))
+        XCTAssertFalse(AIRemainderOutputPolicy.shouldSuppressGameplayAudio(
+            players: [player(1, ai: false, bankrupt: true), player(2, ai: true, bankrupt: true)],
+            gameInProgress: true
+        ))
+        XCTAssertFalse(AIRemainderOutputPolicy.shouldSuppressGameplayAudio(
+            players: [player(1, ai: false, bankrupt: true), player(2, ai: true, bankrupt: false)],
+            gameInProgress: false
+        ))
+    }
+}

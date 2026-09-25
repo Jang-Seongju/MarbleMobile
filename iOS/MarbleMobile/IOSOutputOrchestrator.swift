@@ -5,8 +5,13 @@ import MarbleMobileCore
 final class IOSOutputOrchestrator {
     var noticeSink: ((String) -> Void)?
 
+    private struct QueuedPlan {
+        let plan: PresentationPlan
+        let gameplayAudioSuppressed: Bool
+    }
+
     private enum PendingItem {
-        case plan(PresentationPlan)
+        case plan(QueuedPlan)
         case barrier((@escaping () -> Void) -> Void)
     }
 
@@ -16,6 +21,9 @@ final class IOSOutputOrchestrator {
     private var isExecuting = false
     private var executingBarrier = false
     private var generation = 0
+    // client(393)의 future GAMEPLAY audio policy와 같은 emit-time snapshot.
+    // 이미 큐에 들어간 마지막 인간 턴 출력은 이 값 변경의 영향을 받지 않는다.
+    private var futureGameplayAudioSuppressed = false
 
     init(audio: IOSAudioController? = nil) {
         self.audio = audio ?? IOSAudioController()
@@ -26,15 +34,19 @@ final class IOSOutputOrchestrator {
             noticeSink?(notice)
         }
 
+        let queued = QueuedPlan(
+            plan: plan,
+            gameplayAudioSuppressed: plan.category == .gameplay && futureGameplayAudioSuppressed
+        )
         switch plan.queuePolicy {
         case .enqueue:
-            pending.append(.plan(plan))
+            pending.append(.plan(queued))
         case .interrupt:
             interruptCurrent(retention: .preserveMarkedPlansAndBarriers)
-            pending.insert(.plan(plan), at: 0)
+            pending.insert(.plan(queued), at: 0)
         case .userInputInterrupt:
             interruptCurrent(retention: .preserveAllPending)
-            pending.insert(.plan(plan), at: 0)
+            pending.insert(.plan(queued), at: 0)
         }
         startNextIfNeeded()
     }
@@ -67,6 +79,12 @@ final class IOSOutputOrchestrator {
 
     func stopBGM() { audio.stopBGM() }
 
+    @discardableResult
+    func setFutureGameplayAudioSuppressed(_ suppressed: Bool) -> Bool {
+        futureGameplayAudioSuppressed = suppressed
+        return true
+    }
+
     private enum PendingRetention {
         case preserveMarkedPlansAndBarriers
         case preserveAllPending
@@ -86,7 +104,7 @@ final class IOSOutputOrchestrator {
             pending = pending.filter { item in
                 switch item {
                 case .barrier: return true
-                case .plan(let plan): return plan.interruptRetention == .preservePending
+                case .plan(let queued): return queued.plan.interruptRetention == .preservePending
                 }
             }
         case .preserveAllPending:
@@ -109,9 +127,13 @@ final class IOSOutputOrchestrator {
                 self.startNextIfNeeded()
             }
 
-        case .plan(let plan):
+        case .plan(let queued):
             let token = generation
-            execute(plan.root, token: token) { [weak self] in
+            execute(
+                queued.plan.root,
+                token: token,
+                gameplayAudioSuppressed: queued.gameplayAudioSuppressed
+            ) { [weak self] in
                 guard let self, self.generation == token else { return }
                 self.isExecuting = false
                 self.startNextIfNeeded()
@@ -119,16 +141,23 @@ final class IOSOutputOrchestrator {
         }
     }
 
-    private func execute(_ node: PresentationNode, token: Int, completion: @escaping () -> Void) {
+    private func execute(
+        _ node: PresentationNode,
+        token: Int,
+        gameplayAudioSuppressed: Bool = false,
+        completion: @escaping () -> Void
+    ) {
         guard token == generation else { return }
         switch node {
         case .tts(let text):
+            if gameplayAudioSuppressed { completion(); return }
             voiceOver.speak(text) { [weak self] in
                 guard let self, self.generation == token else { return }
                 completion()
             }
 
         case .voice(let clip, let fallbackTTS):
+            if gameplayAudioSuppressed { completion(); return }
             var started = false
             started = audio.playVoice(clip) { [weak self] success in
                 guard let self, self.generation == token else { return }
@@ -141,6 +170,7 @@ final class IOSOutputOrchestrator {
             if !started, fallbackTTS == nil { completion() }
 
         case .sfx(let clip, let policy):
+            if gameplayAudioSuppressed { completion(); return }
             if policy == .startOnly {
                 _ = audio.playSFX(clip)
                 completion()
@@ -161,19 +191,26 @@ final class IOSOutputOrchestrator {
             completion()
 
         case .delay(let milliseconds):
+            if gameplayAudioSuppressed { completion(); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(max(0, milliseconds))) { [weak self] in
                 guard let self, self.generation == token else { return }
                 completion()
             }
 
         case .sequence(let children):
-            executeSequence(children, index: 0, token: token, completion: completion)
+            executeSequence(
+                children,
+                index: 0,
+                token: token,
+                gameplayAudioSuppressed: gameplayAudioSuppressed,
+                completion: completion
+            )
 
         case .parallel(let children):
             guard !children.isEmpty else { completion(); return }
             var remaining = children.count
             for child in children {
-                execute(child, token: token) { [weak self] in
+                execute(child, token: token, gameplayAudioSuppressed: gameplayAudioSuppressed) { [weak self] in
                     guard let self, self.generation == token else { return }
                     remaining -= 1
                     if remaining == 0 { completion() }
@@ -186,13 +223,20 @@ final class IOSOutputOrchestrator {
         _ children: [PresentationNode],
         index: Int,
         token: Int,
+        gameplayAudioSuppressed: Bool,
         completion: @escaping () -> Void
     ) {
         guard token == generation else { return }
         guard index < children.count else { completion(); return }
-        execute(children[index], token: token) { [weak self] in
+        execute(children[index], token: token, gameplayAudioSuppressed: gameplayAudioSuppressed) { [weak self] in
             guard let self, self.generation == token else { return }
-            self.executeSequence(children, index: index + 1, token: token, completion: completion)
+            self.executeSequence(
+                children,
+                index: index + 1,
+                token: token,
+                gameplayAudioSuppressed: gameplayAudioSuppressed,
+                completion: completion
+            )
         }
     }
 }

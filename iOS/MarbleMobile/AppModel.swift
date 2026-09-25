@@ -72,6 +72,8 @@ final class AppModel: ObservableObject {
     private var aiSelectionHistory: [String] = []
     private var activatedInteractionRequestIDs: Set<String> = []
     private var pendingRotorDirections: [String: [Bool]] = [:]
+    private var aiRemainderTextOnly = false
+    private var aiRemainderActivationPending = false
 
     // LoginWindow가 재로그인/회원가입 왕복에서도 입력 상태를 보존하는 PC 계약을 유지한다.
     @Published var loginUsername = ""
@@ -949,6 +951,7 @@ final class AppModel: ObservableObject {
     private func handleGameStarted(_ data: [String: Any]) {
         do {
             let snapshot = try GameplayParser.gameStarted(data)
+            resetAIRemainderOutputMode()
             gamePlayers = snapshot.players
             gameCities = snapshot.cities
             gameIsActive = true
@@ -988,6 +991,7 @@ final class AppModel: ObservableObject {
             gameCities = snapshot.cities
             gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: snapshot.players)
             if let current = snapshot.currentPlayerID { currentPlayerID = current }
+            refreshAIRemainderOutputMode()
         } catch {
             return
         }
@@ -998,6 +1002,7 @@ final class AppModel: ObservableObject {
               let payload = GameplayParser.notificationPayload(data) else { return }
 
         if type == "turn_started" {
+            activatePendingAIRemainderOnTurnStarted()
             if turnDeadlineWarning.hasPendingZeroSFX {
                 output.enqueueAsyncBarrier { [weak self] completion in
                     guard let self else { completion(); return }
@@ -1077,7 +1082,47 @@ final class AppModel: ObservableObject {
             context: context
         ) {
             output.emit(plan)
+            if type == "game_over", aiRemainderTextOnly, let result = plan.persistentNotice, !result.isEmpty {
+                // client(393): AI remainder의 진행 GAMEPLAY 음향은 무음이지만
+                // 최종 승자 결과 한 줄은 SYSTEM_UI TTS로 예외 출력한다.
+                output.emit(.systemTTS(result, preservePending: true))
+            }
         }
+        if type == "game_over" { resetAIRemainderOutputMode() }
+    }
+
+    private func refreshAIRemainderOutputMode() {
+        if aiRemainderTextOnly { return }
+        let condition = AIRemainderOutputPolicy.shouldSuppressGameplayAudio(
+            players: gamePlayers,
+            gameInProgress: gameIsActive && !gameFinished
+        )
+        if condition {
+            aiRemainderActivationPending = true
+        } else {
+            aiRemainderActivationPending = false
+        }
+    }
+
+    private func activatePendingAIRemainderOnTurnStarted() {
+        guard aiRemainderActivationPending, !aiRemainderTextOnly else { return }
+        let condition = AIRemainderOutputPolicy.shouldSuppressGameplayAudio(
+            players: gamePlayers,
+            gameInProgress: gameIsActive && !gameFinished
+        )
+        guard condition else {
+            aiRemainderActivationPending = false
+            return
+        }
+        guard output.setFutureGameplayAudioSuppressed(true) else { return }
+        aiRemainderActivationPending = false
+        aiRemainderTextOnly = true
+    }
+
+    private func resetAIRemainderOutputMode() {
+        aiRemainderActivationPending = false
+        aiRemainderTextOnly = false
+        _ = output.setFutureGameplayAudioSuppressed(false)
     }
 
     private func handleInteractionRequest(_ data: [String: Any]) {
@@ -1544,6 +1589,7 @@ final class AppModel: ObservableObject {
         isGameStartPending = false
         gameRotor.reset()
         pendingRotorDirections = [:]
+        resetAIRemainderOutputMode()
     }
 
     private func clearRoomState() {

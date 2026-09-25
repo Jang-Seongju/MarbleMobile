@@ -133,6 +133,21 @@ public struct GamePlayerSnapshot: Identifiable, Equatable, Sendable {
     }
 }
 
+public enum AIRemainderOutputPolicy {
+    /// client(393)의 AI remainder 판정과 동일한 public player-state 계약.
+    /// 진행 중 게임에서 실제 인간 참가자가 1명 이상 존재하고 그 인간이 모두
+    /// 파산했으며 생존 AI가 1명 이상일 때만 이후 GAMEPLAY 음향을 억제한다.
+    public static func shouldSuppressGameplayAudio(
+        players: [GamePlayerSnapshot],
+        gameInProgress: Bool
+    ) -> Bool {
+        guard gameInProgress else { return false }
+        let humans = players.filter { !$0.isAI }
+        guard !humans.isEmpty, humans.allSatisfy(\.isBankrupt) else { return false }
+        return players.contains { $0.isAI && !$0.isBankrupt }
+    }
+}
+
 public struct GameStartedSnapshot: Equatable, Sendable {
     public let yourPlayerID: Int
     public let currentPlayerID: Int

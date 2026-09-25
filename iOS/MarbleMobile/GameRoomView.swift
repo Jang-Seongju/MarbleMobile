@@ -90,12 +90,18 @@ struct GameRoomView: View {
                 AIPlayerSelectionSheet(request: request)
                     .environmentObject(model)
             }
-            .sheet(item: interactionSheetBinding) { request in
+            .sheet(item: interactionSheetBinding, onDismiss: restoreBoardAccessibilityFocus) { request in
                 GameInteractionSheet(request: request)
                     .id(request.requestID)
                     .environmentObject(model)
             }
         }
+    }
+
+    private func restoreBoardAccessibilityFocus() {
+        guard model.isBoardReady else { return }
+        boardAccessibilityFocus = false
+        DispatchQueue.main.async { boardAccessibilityFocus = true }
     }
 
     private var interactionSheetBinding: Binding<InteractionRequestSnapshot?> {

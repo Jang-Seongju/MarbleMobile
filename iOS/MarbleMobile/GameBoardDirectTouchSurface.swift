@@ -38,8 +38,9 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         view.accessibilityDirectTouchOptions = .silentOnTouch
         view.callbacks = context.coordinator.callbacks
 
-        addSwipe(.left, touches: 1, selector: #selector(Coordinator.previousCell), to: view, coordinator: context.coordinator)
-        addSwipe(.right, touches: 1, selector: #selector(Coordinator.nextCell), to: view, coordinator: context.coordinator)
+        // PC판 보드 탐색 방향: 왼쪽은 다음 칸(출발지 → 방콕), 오른쪽은 이전 칸(출발지 → 서울).
+        addSwipe(.left, touches: 1, selector: #selector(Coordinator.nextCell), to: view, coordinator: context.coordinator)
+        addSwipe(.right, touches: 1, selector: #selector(Coordinator.previousCell), to: view, coordinator: context.coordinator)
         addSwipe(.up, touches: 1, selector: #selector(Coordinator.previousCityCost), to: view, coordinator: context.coordinator)
         addSwipe(.down, touches: 1, selector: #selector(Coordinator.nextCityCost), to: view, coordinator: context.coordinator)
 
