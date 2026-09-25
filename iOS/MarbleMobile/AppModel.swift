@@ -745,7 +745,7 @@ final class AppModel: ObservableObject {
     }
 
     func interactionDescription(_ request: InteractionRequestSnapshot) -> String {
-        let cityInformation = Dictionary(uniqueKeysWithValues: gameCities.compactMap { info in
+        let cityInformation: [Int: InformationInfo] = Dictionary(uniqueKeysWithValues: gameCities.compactMap { info in
             guard let cityID = info.cityID else { return nil }
             return (cityID, info)
         })
@@ -759,7 +759,7 @@ final class AppModel: ObservableObject {
     }
 
     func interactionEntryAnnouncement(_ request: InteractionRequestSnapshot) -> String {
-        let cityInformation = Dictionary(uniqueKeysWithValues: gameCities.compactMap { info in
+        let cityInformation: [Int: InformationInfo] = Dictionary(uniqueKeysWithValues: gameCities.compactMap { info in
             guard let cityID = info.cityID else { return nil }
             return (cityID, info)
         })
