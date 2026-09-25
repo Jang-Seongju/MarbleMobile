@@ -104,6 +104,10 @@ public enum WireMessages {
         ["type": "game_action", "action": "toggle_held_card_use"]
     }
 
+    public static func gameRecoveryCompleted(recoveryID: String) -> [String: Any] {
+        ["type": "game_recovery_completed", "recovery_id": recoveryID]
+    }
+
     public static func interactionResponse(
         requestID: String,
         responseType: String,

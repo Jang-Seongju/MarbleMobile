@@ -92,6 +92,10 @@ final class APIClient {
         throw profileHTTPError(status: first.response.statusCode)
     }
 
+    func refreshSession(tokens: TokenPair) async throws -> TokenPair {
+        try await refresh(refreshToken: tokens.refreshToken)
+    }
+
     private func refresh(refreshToken: String) async throws -> TokenPair {
         guard !refreshToken.isEmpty else {
             throw APIAuthenticationLostError(message: "로그인 정보를 갱신할 수 없습니다. 다시 로그인해 주세요.")

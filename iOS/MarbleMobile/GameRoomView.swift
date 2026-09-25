@@ -9,7 +9,7 @@ struct GameRoomView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 10) {
+            VStack(spacing: 3) {
                 topControls
 
                 teamArea
@@ -47,6 +47,7 @@ struct GameRoomView: View {
                     onLineC: { model.jumpToBoardLine("C") },
                     onLineD: { model.jumpToBoardLine("D") }
                 )
+                .layoutPriority(1)
 
                 chatArea
             }

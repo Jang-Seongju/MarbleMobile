@@ -13,6 +13,7 @@ public struct BoardCellSnapshot: Identifiable, Equatable, Sendable {
 
     public var id: Int { index }
     public var isCity: Bool { cellType == "CITY" }
+    public var isCorner: Bool { (row == 0 || row == 8) && (column == 0 || column == 8) }
 
     public init(
         index: Int,

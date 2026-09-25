@@ -15,15 +15,24 @@ struct MarbleMobileApp: App {
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        switch model.screen {
-        case .login:
-            LoginView()
-        case .lobby:
-            LobbyView()
-        case .gameRoom:
-            GameRoomView()
+        Group {
+            switch model.screen {
+            case .login:
+                LoginView()
+            case .lobby:
+                LobbyView()
+            case .gameRoom:
+                GameRoomView()
+            }
+        }
+        .onAppear {
+            model.setApplicationSceneActive(scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            model.setApplicationSceneActive(newPhase == .active)
         }
     }
 }

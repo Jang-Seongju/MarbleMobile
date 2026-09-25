@@ -79,6 +79,13 @@ final class AppModel: ObservableObject {
     private var pendingRotorDirections: [String: [Bool]] = [:]
     private var aiRemainderTextOnly = false
     private var aiRemainderActivationPending = false
+    private var appSceneActive = true
+    private var reconnectNeeded = false
+    private var reconnectAttempt = 0
+    private var reconnectTask: Task<Void, Never>?
+    private var recoverySnapshotApplied = false
+    private var recoveryCompletedSent = false
+    private let boardCornerFeedback = UIImpactFeedbackGenerator(style: .medium)
 
     // LoginWindow가 재로그인/회원가입 왕복에서도 입력 상태를 보존하는 PC 계약을 유지한다.
     @Published var loginUsername = ""
@@ -106,6 +113,16 @@ final class AppModel: ObservableObject {
         socket.onDisconnected = { [weak self] message in self?.handleDisconnect(message) }
     }
 
+    func setApplicationSceneActive(_ active: Bool) {
+        appSceneActive = active
+        guard active, session != nil, screen != .login else { return }
+        if reconnectNeeded || !socket.hasActiveConnection {
+            scheduleReconnect()
+        } else {
+            socket.probeConnection()
+        }
+    }
+
     func loadSavedLoginIfNeeded() {
         guard !loginCredentialsLoaded else { return }
         loginCredentialsLoaded = true
@@ -126,6 +143,7 @@ final class AppModel: ObservableObject {
             if save { credentials.save(username: username, password: password) }
             else { credentials.clear(currentUsername: username) }
             session = newSession
+            resetReconnectState()
             recoveryEntry = nil
             lobbyPage = .users
             users = []
@@ -147,6 +165,9 @@ final class AppModel: ObservableObject {
     }
 
     func logout() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectNeeded = false
         socket.disconnect()
         clearAuthenticatedState()
         screen = .login
@@ -334,7 +355,8 @@ final class AppModel: ObservableObject {
     }
 
     var canRollDice: Bool {
-        gameIsActive
+        entryPhase == .active
+            && gameIsActive
             && !gameFinished
             && myPlayerID != nil
             && currentPlayerID == myPlayerID
@@ -384,7 +406,18 @@ final class AppModel: ObservableObject {
         }
         boardCursor.jump(to: target.index)
         gameRotor.resetBoardCellSelections()
-        announceCurrentBoardCell()
+        if target.isCorner {
+            boardCornerFeedback.prepare()
+            boardCornerFeedback.impactOccurred()
+        }
+        output.emit(PresentationPlan(
+            root: .parallel([
+                .sfx(clip: "board_move.wav", completion: .startOnly),
+                .tts(currentBoardAccessibilityDescription),
+            ]),
+            category: .systemUI,
+            queuePolicy: .userInputInterrupt
+        ))
     }
 
     func playBoardBoundaryWarning() {
@@ -392,6 +425,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleIslandContextAction() {
+        guard entryPhase == .active else { return }
         switch islandContextAction {
         case .escapeCard:
             socket.send(WireMessages.toggleHeldCardUse())
@@ -403,7 +437,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleSalaryBoosterUse() {
-        guard salaryBoosterContextAvailable else { return }
+        guard entryPhase == .active, salaryBoosterContextAvailable else { return }
         socket.send(WireMessages.toggleHeldCardUse())
     }
 
@@ -847,7 +881,8 @@ final class AppModel: ObservableObject {
     }
 
     func respondToInteraction(responseType: String, payload: [String: Any] = [:]) {
-        guard let request = activeInteraction, !interactionResponseSubmitted else { return }
+        guard entryPhase == .active,
+              let request = activeInteraction, !interactionResponseSubmitted else { return }
         interactionResponseSubmitted = true
         socket.send(WireMessages.interactionResponse(
             requestID: request.requestID,
@@ -1464,20 +1499,15 @@ final class AppModel: ObservableObject {
     private func handleSocketMessage(_ data: [String: Any]) {
         guard let type = data["type"] as? String else { return }
         if type == "session_entry" {
-            do {
-                let entry = try SessionEntryParser.parse(data)
-                recoveryEntry = entry
-                switch entry.mode {
-                case .normalLobby:
-                    entryPhase = .active
-                    recoveryEntry = nil
-                    requestSocialState()
-                case .activeGameRecovery:
-                    entryPhase = .recoveryRequired
-                }
-            } catch {
-                socket.disconnect()
-                returnToLogin(message: "서버의 로그인 상태 응답이 올바르지 않습니다.\n다시 로그인해 주세요.")
+            handleSessionEntry(data)
+            return
+        }
+
+        if entryPhase == .recoveryRequired {
+            if type == "game_recovery_snapshot" {
+                handleGameRecoverySnapshot(data)
+            } else if type == "game_recovery_completed" {
+                handleGameRecoveryCompleted(data)
             }
             return
         }
@@ -1624,6 +1654,268 @@ final class AppModel: ObservableObject {
     }
 
 
+    private func handleSessionEntry(_ data: [String: Any]) {
+        do {
+            let entry = try SessionEntryParser.parse(data)
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            reconnectNeeded = false
+            reconnectAttempt = 0
+            recoveryEntry = entry
+
+            switch entry.mode {
+            case .normalLobby:
+                recoverySnapshotApplied = false
+                recoveryCompletedSent = false
+                recoveryEntry = nil
+                entryPhase = .active
+                if roomEntry != nil {
+                    clearRoomState()
+                    screen = .lobby
+                }
+                requestSocialState()
+
+            case .activeGameRecovery:
+                recoverySnapshotApplied = false
+                recoveryCompletedSent = false
+                entryPhase = .recoveryRequired
+                turnCommandWindowOpen = false
+                turnDeadlineWarning.stop(preserveZeroSFX: false)
+            }
+        } catch {
+            socket.disconnect()
+            returnToLogin(message: "서버의 로그인 상태 응답이 올바르지 않습니다.\n다시 로그인해 주세요.")
+        }
+    }
+
+    private func handleGameRecoverySnapshot(_ data: [String: Any]) {
+        guard entryPhase == .recoveryRequired,
+              let entry = recoveryEntry,
+              entry.mode == .activeGameRecovery,
+              !recoverySnapshotApplied else { return }
+
+        let snapshot: GameRecoverySnapshot
+        do {
+            snapshot = try GameRecoveryParser.parse(data)
+        } catch {
+            socket.disconnect()
+            returnToLogin(message: "게임 복구 정보를 적용할 수 없습니다.\n다시 로그인해 주세요.")
+            return
+        }
+
+        // 이전 reconnect 시도의 늦은 snapshot은 현재 복구를 훼손하지 않는다.
+        guard snapshot.recoveryID == entry.recoveryID else { return }
+        guard snapshot.roomID == entry.roomID,
+              snapshot.gameSessionID == entry.gameSessionID,
+              snapshot.yourPlayerID == entry.yourPlayerID else {
+            socket.disconnect()
+            returnToLogin(message: "게임 복구 정보를 적용할 수 없습니다.\n다시 로그인해 주세요.")
+            return
+        }
+
+        // transient disconnect 복구는 기존 게임방 presentation을 보존한다.
+        // 만약 화면 전환 중 roomEntry만 비어 있다면 기존 roomUpdate의
+        // authoritative host/authority 값을 이용해 같은 방 header만 복원한다.
+        if roomEntry == nil,
+           let update = roomUpdate,
+           update.roomID == snapshot.roomID {
+            roomEntry = RoomEntrySnapshot(
+                roomID: update.roomID,
+                title: update.title,
+                maxPlayers: update.maxPlayers,
+                isPrivate: update.isPrivate,
+                hostUserID: update.hostUserID,
+                gameStartAuthorityUserID: update.gameStartAuthorityUserID
+            )
+        }
+        guard roomEntry?.roomID == snapshot.roomID else {
+            socket.disconnect()
+            returnToLogin(message: "게임 복구 정보를 적용할 수 없습니다.\n다시 로그인해 주세요.")
+            return
+        }
+
+        turnDeadlineWarning.stop(preserveZeroSFX: false)
+        clearAISelection()
+        activeInteraction = nil
+        interactionResponseSubmitted = false
+        activatedInteractionRequestIDs = []
+
+        boardCatalog = snapshot.boardCatalog
+        staticInformationCatalog = snapshot.staticInformation
+        gamePlayers = snapshot.gameState.players
+        gameCities = snapshot.gameState.cities
+        gameIsActive = true
+        gameFinished = false
+        myPlayerID = snapshot.yourPlayerID
+        currentPlayerID = snapshot.gameState.currentPlayerID
+        currentTurnGeneration = snapshot.turn.turnGeneration
+        nextTurnCommand = snapshot.turn.nextTurnCommand ?? "roll_dice"
+        turnCommandWindowOpen = false
+        turnActionStarted = snapshot.turn.hasStarted
+        gameRotor.reset()
+        gameRotor.synchronizePlayers(myPlayerID: snapshot.yourPlayerID, players: snapshot.gameState.players)
+        pendingRotorDirections = [:]
+
+        if let me = snapshot.gameState.players.first(where: { $0.playerID == snapshot.yourPlayerID }) {
+            boardCursor.jump(to: me.position)
+        } else {
+            boardCursor.reset()
+        }
+
+        heldCardID = snapshot.heldCard?.cardID
+        heldCardName = snapshot.heldCard?.name
+        salaryBoosterSelected = snapshot.salaryBoosterCardID != nil
+        switch snapshot.islandEscapeReservationType {
+        case .bailPayment:
+            bailPaymentSelected = true
+            islandEscapeCardSelected = false
+        case .islandEscapeCard:
+            bailPaymentSelected = false
+            islandEscapeCardSelected = true
+        case nil:
+            bailPaymentSelected = false
+            islandEscapeCardSelected = false
+        }
+        pendingSilentHeldCardQuery = false
+
+        resetAIRemainderOutputMode()
+        refreshAIRemainderOutputMode()
+        screen = .gameRoom
+
+        recoverySnapshotApplied = true
+        socket.send(WireMessages.gameRecoveryCompleted(recoveryID: snapshot.recoveryID))
+        recoveryCompletedSent = true
+    }
+
+    private func handleGameRecoveryCompleted(_ data: [String: Any]) {
+        guard entryPhase == .recoveryRequired,
+              let entry = recoveryEntry,
+              recoverySnapshotApplied,
+              recoveryCompletedSent,
+              data["recovery_id"] as? String == entry.recoveryID,
+              let accepted = WireScalarParser.exactBool(data["accepted"])
+        else { return }
+
+        if !accepted {
+            if data["entry_mode"] as? String == SessionEntryMode.normalLobby.rawValue,
+               let reason = data["reason_code"] as? String,
+               !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                recoveryEntry = nil
+                recoverySnapshotApplied = false
+                recoveryCompletedSent = false
+                entryPhase = .active
+                clearRoomState()
+                screen = .lobby
+                requestSocialState()
+                return
+            }
+            socket.disconnect()
+            returnToLogin(message: "게임 복구를 완료할 수 없습니다.\n다시 로그인해 주세요.")
+            return
+        }
+
+        guard let rawGameState = data["game_state"] as? [String: Any] else {
+            socket.disconnect()
+            returnToLogin(message: "게임 복구를 완료할 수 없습니다.\n다시 로그인해 주세요.")
+            return
+        }
+
+        let gameState: GameStateSnapshot
+        let lifecycle: RecoveryCompletionTurnLifecycle
+        let pendingInteractionData: [String: Any]?
+        do {
+            gameState = try GameplayParser.gameState(rawGameState)
+            lifecycle = try RecoveryCompletionParser.turnLifecycle(data["turn_lifecycle"])
+            if let current = lifecycle.currentPlayerID,
+               !gameState.players.contains(where: { $0.playerID == current }) {
+                throw GameRecoveryParserError.invalidMessage
+            }
+            if data["pending_interaction_request"] == nil || data["pending_interaction_request"] is NSNull {
+                pendingInteractionData = nil
+            } else {
+                guard let raw = data["pending_interaction_request"] as? [String: Any] else {
+                    throw GameRecoveryParserError.invalidMessage
+                }
+                _ = try InteractionRequestParser.parse(raw)
+                pendingInteractionData = raw
+            }
+        } catch {
+            socket.disconnect()
+            returnToLogin(message: "게임 복구를 완료할 수 없습니다.\n다시 로그인해 주세요.")
+            return
+        }
+
+        gamePlayers = gameState.players
+        gameCities = gameState.cities
+        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gameState.players)
+        currentPlayerID = lifecycle.currentPlayerID
+        currentTurnGeneration = lifecycle.turnGeneration
+        nextTurnCommand = lifecycle.nextTurnCommand ?? "roll_dice"
+        turnActionStarted = lifecycle.hasStarted
+        turnCommandWindowOpen = false
+        refreshAIRemainderOutputMode()
+
+        recoveryEntry = nil
+        recoverySnapshotApplied = false
+        recoveryCompletedSent = false
+        entryPhase = .active
+        screen = .gameRoom
+
+        output.emit(.systemTTS("재접속했습니다.", preservePending: true))
+        resumeTurnAfterRecovery(lifecycle)
+
+        if let pendingInteractionData {
+            restoreRecoveredInteraction(pendingInteractionData)
+        }
+        refreshHeldCardStateSilently()
+    }
+
+    private func restoreRecoveredInteraction(_ data: [String: Any]) {
+        guard let request = try? InteractionRequestParser.parse(data) else { return }
+        activeInteraction = request
+        interactionResponseSubmitted = false
+        turnActionStarted = true
+        if request.interactionType == "select_destination" {
+            // 서버에서 이미 진행 중인 world-travel request다. presentation
+            // activate를 다시 보내지 않고 현재 request를 활성 상태로만 복원한다.
+            activatedInteractionRequestIDs.insert(request.requestID)
+        }
+    }
+
+    private func resumeTurnAfterRecovery(_ lifecycle: RecoveryCompletionTurnLifecycle) {
+        turnDeadlineWarning.stop(preserveZeroSFX: false)
+        guard gameIsActive, !gameFinished,
+              lifecycle.currentPlayerID == myPlayerID,
+              lifecycle.humanControlled,
+              let generation = lifecycle.turnGeneration else {
+            turnCommandWindowOpen = false
+            return
+        }
+
+        if lifecycle.turnDeadlineAt != nil || lifecycle.turnRemainingSeconds != nil {
+            turnCommandWindowOpen = true
+            _ = turnDeadlineWarning.startForTurn(
+                playerID: lifecycle.currentPlayerID,
+                localPlayerID: myPlayerID,
+                turnGeneration: generation,
+                turnDeadlineAt: lifecycle.turnDeadlineAt,
+                turnRemainingSeconds: lifecycle.turnRemainingSeconds
+            )
+            return
+        }
+
+        // PENDING 자기 턴은 PC판과 같이 reconnect 안내가 큐에서 끝난 뒤
+        // turn_ready를 보내 새 deadline을 시작한다.
+        output.enqueueBarrier { [weak self] in
+            guard let self,
+                  self.entryPhase == .active,
+                  self.currentPlayerID == self.myPlayerID,
+                  self.currentTurnGeneration == generation else { return }
+            self.socket.send(WireMessages.turnReady(turnGeneration: generation))
+            self.turnCommandWindowOpen = true
+        }
+    }
+
     private func enterGameRoom(_ snapshot: RoomEntrySnapshot) {
         output.stopAll()
         isRoomEntryRecoveryPending = false
@@ -1737,8 +2029,72 @@ final class AppModel: ObservableObject {
     }
 
     private func handleDisconnect(_ message: String) {
-        guard screen != .login else { return }
-        returnToLogin(message: message)
+        guard screen != .login, session != nil else { return }
+        if reconnectNeeded {
+            if appSceneActive, reconnectTask == nil, !socket.hasActiveConnection {
+                scheduleReconnect()
+            }
+            return
+        }
+
+        // iOS background/network interruption is not logout. Keep the authenticated
+        // session and the existing room/game presentation intact, close input gates,
+        // and re-enter through the server's authoritative session_entry contract.
+        reconnectNeeded = true
+        entryPhase = .connecting
+        turnCommandWindowOpen = false
+        turnDeadlineWarning.stop(preserveZeroSFX: false)
+        recoveryEntry = nil
+        recoverySnapshotApplied = false
+        recoveryCompletedSent = false
+
+        if appSceneActive {
+            scheduleReconnect()
+        }
+    }
+
+    private func scheduleReconnect() {
+        guard reconnectNeeded, appSceneActive, session != nil, screen != .login else { return }
+        reconnectTask?.cancel()
+        let attempt = reconnectAttempt
+        reconnectAttempt += 1
+        let delaySeconds = min(8, attempt == 0 ? 0 : (1 << min(attempt - 1, 3)))
+
+        reconnectTask = Task { @MainActor [weak self] in
+            if delaySeconds > 0 {
+                try? await Task.sleep(for: .seconds(delaySeconds))
+            }
+            guard let self, !Task.isCancelled,
+                  self.reconnectNeeded, self.appSceneActive,
+                  var currentSession = self.session else { return }
+
+            do {
+                currentSession.tokens = try await self.api.refreshSession(tokens: currentSession.tokens)
+                guard !Task.isCancelled, self.reconnectNeeded, self.appSceneActive else { return }
+                self.session = currentSession
+                self.entryPhase = .connecting
+                self.socket.connect(accessToken: currentSession.tokens.accessToken)
+                self.entryPhase = .awaitingSessionEntry
+                self.reconnectTask = nil
+            } catch let error as APIAuthenticationLostError {
+                self.reconnectTask = nil
+                self.returnToLogin(message: error.localizedDescription)
+            } catch {
+                self.reconnectTask = nil
+                if self.reconnectNeeded, self.appSceneActive {
+                    self.scheduleReconnect()
+                }
+            }
+        }
+    }
+
+    private func resetReconnectState() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectNeeded = false
+        reconnectAttempt = 0
+        recoverySnapshotApplied = false
+        recoveryCompletedSent = false
     }
 
     private func returnToLogin(message: String) {
@@ -1749,6 +2105,7 @@ final class AppModel: ObservableObject {
     }
 
     private func clearAuthenticatedState() {
+        resetReconnectState()
         session = nil
         users = []
         rooms = []
