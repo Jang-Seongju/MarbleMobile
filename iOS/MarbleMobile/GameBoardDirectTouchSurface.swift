@@ -4,7 +4,6 @@ import UIKit
 /// VoiceOver Direct Touch가 활성인 동안 보드 제스처를 앱에 직접 전달하는 표면.
 /// 게임 의미는 판단하지 않고 AppModel의 공통 정보/로터 경계로 입력만 전달한다.
 struct GameBoardDirectTouchSurface: UIViewRepresentable {
-    let currentCellDescription: String
     let onPreviousCell: () -> Void
     let onNextCell: () -> Void
     let onPreviousCityCost: () -> Void
@@ -31,11 +30,9 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> DirectTouchBoardView {
         let view = DirectTouchBoardView(frame: .zero)
         view.backgroundColor = .clear
-        view.isAccessibilityElement = true
-        view.accessibilityLabel = "게임 보드"
-        view.accessibilityHint = "한 손가락 좌우로 보드 칸을 이동하고 아래와 위로 현재 도시 비용을 순환합니다. 두 손가락 회전으로 게임 로터를 바꾸고, 두 손가락 좌우로 로터 선택을 바꾸며, 아래와 위로 세부 정보를 순환합니다. 세 손가락 방향 쓸기로 라인을 이동하고 세 손가락 두 번 탭으로 선택된 플레이어 정보를 조회합니다. 한 손가락 두 번 탭하면 표준 VoiceOver로 돌아갑니다."
-        view.accessibilityTraits = [.allowsDirectInteraction]
-        view.accessibilityDirectTouchOptions = .silentOnTouch
+        // Direct Touch 접근성 의미는 SwiftUI의 GameBoardShell이 소유한다.
+        // 이 UIView는 Direct Touch가 활성화된 뒤 실제 UIKit gesture만 받는다.
+        view.isAccessibilityElement = false
         view.callbacks = context.coordinator.callbacks
 
         // PC판 보드 탐색 방향: 왼쪽은 다음 칸(출발지 → 방콕), 오른쪽은 이전 칸(출발지 → 서울).
@@ -60,6 +57,9 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         addSwipe(.up, touches: 3, selector: #selector(Coordinator.lineC), to: view, coordinator: context.coordinator)
         addSwipe(.down, touches: 3, selector: #selector(Coordinator.lineA), to: view, coordinator: context.coordinator)
 
+        // 시스템 Direct Touch를 끄기 어려운 상황의 안전한 탈출 경로.
+        // 앱 모드를 토글하지 않고 VoiceOver 포커스를 다른 요소로 이동시켜
+        // 시스템 Direct Touch의 "포커스가 떠나면 종료" 계약을 사용한다.
         let exitTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.exitDirectTouch))
         exitTap.numberOfTouchesRequired = 1
         exitTap.numberOfTapsRequired = 2
@@ -81,7 +81,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     func updateUIView(_ uiView: DirectTouchBoardView, context: Context) {
         context.coordinator.parent = self
         uiView.callbacks = context.coordinator.callbacks
-        uiView.accessibilityValue = currentCellDescription
     }
 
     private func addSwipe(

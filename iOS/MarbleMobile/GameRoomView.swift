@@ -20,13 +20,11 @@ struct GameRoomView: View {
                     catalog: model.boardCatalog,
                     cursorIndex: model.boardCursor.index,
                     currentCellDescription: model.currentBoardAccessibilityDescription,
-                    directTouchEnabled: model.isBoardDirectTouchEnabled && voiceOverEnabled,
+                    directTouchAvailable: model.isBoardDirectTouchAreaAvailable && voiceOverEnabled,
                     onPreviousCell: model.moveBoardCursorBackward,
                     onNextCell: model.moveBoardCursorForward,
                     onPreviousCityCost: model.cycleBoardCityCostBackward,
                     onNextCityCost: model.cycleBoardCityCostForward,
-                    onExitDirectTouch: model.enterStandardVoiceOverBoardMode,
-                    onEnterDirectTouch: model.enterDirectTouchBoardMode,
                     onMagicTap: model.performBoardMagicTap,
                     onEscape: {
                         if !model.performBoardEscape() {
@@ -79,11 +77,6 @@ struct GameRoomView: View {
             }
             .onChange(of: model.hasJoinedTeam) { wasJoined, isJoined in
                 guard !wasJoined, isJoined else { return }
-                DispatchQueue.main.async { boardAccessibilityFocus = true }
-            }
-            .onChange(of: model.boardAccessibilityMode) { _, _ in
-                guard model.isBoardReady else { return }
-                boardAccessibilityFocus = false
                 DispatchQueue.main.async { boardAccessibilityFocus = true }
             }
             .sheet(item: $model.aiSelectionRequest) { request in
@@ -196,17 +189,17 @@ struct GameRoomView: View {
 }
 
 private struct GameBoardShell: View {
+    @AccessibilityFocusState private var messageAccessibilityFocus: Bool
+
     let messages: [String]
     let catalog: BoardCatalogSnapshot?
     let cursorIndex: Int
     let currentCellDescription: String
-    let directTouchEnabled: Bool
+    let directTouchAvailable: Bool
     let onPreviousCell: () -> Void
     let onNextCell: () -> Void
     let onPreviousCityCost: () -> Void
     let onNextCityCost: () -> Void
-    let onExitDirectTouch: () -> Void
-    let onEnterDirectTouch: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
     let onSelectedPlayerInfo: () -> Void
@@ -242,16 +235,19 @@ private struct GameBoardShell: View {
                 messageArea
                     .frame(width: cell * 7, height: cell * 7)
                     .position(x: side / 2, y: side / 2)
-                    .accessibilityHidden(directTouchEnabled)
 
-                if directTouchEnabled {
+                if directTouchAvailable {
                     GameBoardDirectTouchSurface(
-                        currentCellDescription: currentCellDescription,
                         onPreviousCell: onPreviousCell,
                         onNextCell: onNextCell,
                         onPreviousCityCost: onPreviousCityCost,
                         onNextCityCost: onNextCityCost,
-                        onExitDirectTouch: onExitDirectTouch,
+                        onExitDirectTouch: {
+                            messageAccessibilityFocus = false
+                            DispatchQueue.main.async {
+                                messageAccessibilityFocus = true
+                            }
+                        },
                         onMagicTap: onMagicTap,
                         onEscape: onEscape,
                         onSelectedPlayerInfo: onSelectedPlayerInfo,
@@ -276,12 +272,15 @@ private struct GameBoardShell: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("게임 보드")
         .accessibilityValue(currentCellDescription)
-        .accessibilityHint(directTouchEnabled
-            ? "다이렉트 터치 사용 중"
-            : "두 번 탭하면 다이렉트 터치를 시작합니다.")
-        .accessibilityAction(.default) {
-            if !directTouchEnabled { onEnterDirectTouch() }
-        }
+        .accessibilityHint(
+            directTouchAvailable
+                ? "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. VoiceOver 로터, 빠른 설정 또는 앱별 다이렉트 터치 설정도 사용할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 게임 메시지로 포커스를 이동합니다."
+                : "현재는 다이렉트 터치를 사용할 수 없습니다."
+        )
+        .accessibilityDirectTouch(
+            directTouchAvailable,
+            options: [.requiresActivation, .silentOnTouch]
+        )
     }
 
     @ViewBuilder
@@ -323,5 +322,6 @@ private struct GameBoardShell: View {
         }
         .background(.thinMaterial)
         .accessibilityLabel("게임 메시지")
+        .accessibilityFocused($messageAccessibilityFocus)
     }
 }

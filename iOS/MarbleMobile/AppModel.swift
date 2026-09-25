@@ -46,7 +46,6 @@ final class AppModel: ObservableObject {
     @Published var boardCatalog: BoardCatalogSnapshot?
     @Published var staticInformationCatalog: StaticInformationCatalogSnapshot?
     @Published var boardCursor = BoardCursorState()
-    @Published var boardAccessibilityMode: BoardAccessibilityMode = .directTouch
     @Published var boardCostCycle = CityCostCycleState()
     @Published var gameRotor = GameRotorState()
     @Published var aiSelectionRequest: AIPlayerSelectionRequest?
@@ -296,9 +295,8 @@ final class AppModel: ObservableObject {
             && request.missionType == "world_travel_destination"
     }
 
-    var isBoardDirectTouchEnabled: Bool {
+    var isBoardDirectTouchAreaAvailable: Bool {
         isBoardReady
-            && boardAccessibilityMode == .directTouch
             && aiSelectionRequest == nil
             && (activeInteraction == nil || isWorldTravelDestinationSelectionActive)
     }
@@ -366,19 +364,6 @@ final class AppModel: ObservableObject {
 
     func cycleBoardCityCostBackward() {
         queryBoardCityCost(boardCostCycle.moveBackward())
-    }
-
-    func enterStandardVoiceOverBoardMode() {
-        guard isBoardReady else { return }
-        boardAccessibilityMode = .standardVoiceOver
-        announce("표준 VoiceOver")
-    }
-
-    func enterDirectTouchBoardMode() {
-        guard isBoardReady else { return }
-        boardAccessibilityMode = .directTouch
-        announce("다이렉트 터치")
-        announceCurrentBoardCell()
     }
 
     func performBoardMagicTap() {
@@ -973,7 +958,6 @@ final class AppModel: ObservableObject {
             boardCatalog = snapshot.boardCatalog
             boardCursor.reset()
             boardCostCycle.reset()
-            boardAccessibilityMode = .directTouch
             let message = "게임을 시작합니다."
             output.emit(.gameEvent(message, root: .sequence([
                 .voice(clip: "game_start.wav", fallbackTTS: message)
@@ -1056,7 +1040,6 @@ final class AppModel: ObservableObject {
             gameFinished = true
             activeInteraction = nil
             interactionResponseSubmitted = false
-            boardAccessibilityMode = .directTouch
         } else if type == "roll_dice_rejected" {
             if let playerID = WireScalarParser.exactInt(payload["player_id"]),
                myPlayerID != nil, playerID != myPlayerID { return }
@@ -1134,7 +1117,6 @@ final class AppModel: ObservableObject {
             interactionResponseSubmitted = false
             turnActionStarted = true
             if request.interactionType == "select_destination" {
-                boardAccessibilityMode = .directTouch
                 if activatedInteractionRequestIDs.insert(request.requestID).inserted {
                     socket.send(WireMessages.interactionPresentationActivate(requestID: request.requestID))
                 }
@@ -1164,7 +1146,6 @@ final class AppModel: ObservableObject {
         activeInteraction = nil
         interactionResponseSubmitted = false
         activatedInteractionRequestIDs.removeAll()
-        boardAccessibilityMode = .directTouch
     }
 
     private func dequeuePendingRotorDirection(for queryType: String) -> Bool? {
@@ -1502,7 +1483,6 @@ final class AppModel: ObservableObject {
         boardCatalog = nil
         staticInformationCatalog = nil
         boardCursor.reset()
-        boardAccessibilityMode = .directTouch
         boardCostCycle.reset()
         gameRotor.reset()
         clearGameplayState()
@@ -1540,7 +1520,6 @@ final class AppModel: ObservableObject {
             roomUpdate = snapshot
             if !wasJoined, hasJoinedTeam {
                 isTeamCreationPending = false
-                boardAccessibilityMode = .directTouch
                 if let actualTeamName = currentTeamName {
                     teamNameDraft = actualTeamName
                 }
@@ -1600,7 +1579,6 @@ final class AppModel: ObservableObject {
         boardCatalog = nil
         staticInformationCatalog = nil
         boardCursor.reset()
-        boardAccessibilityMode = .directTouch
         boardCostCycle.reset()
         gameRotor.reset()
         clearGameplayState()

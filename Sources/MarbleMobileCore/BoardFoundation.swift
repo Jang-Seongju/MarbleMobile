@@ -145,11 +145,6 @@ public enum BoardCellsParser {
     }
 }
 
-public enum BoardAccessibilityMode: String, Equatable, Sendable {
-    case directTouch
-    case standardVoiceOver
-}
-
 public struct BoardCursorState: Equatable, Sendable {
     public private(set) var index: Int
 
