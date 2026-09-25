@@ -4,6 +4,10 @@ import UIKit
 /// VoiceOver Direct Touch가 활성인 동안 보드 제스처를 앱에 직접 전달하는 표면.
 /// 게임 의미는 판단하지 않고 AppModel의 공통 정보/로터 경계로 입력만 전달한다.
 struct GameBoardDirectTouchSurface: UIViewRepresentable {
+    let accessibilityLabel: String
+    let accessibilityValue: String
+    let accessibilityHint: String
+    let accessibilityFocusRequest: Int
     let onPreviousCell: () -> Void
     let onNextCell: () -> Void
     let onPreviousCityCost: () -> Void
@@ -30,9 +34,14 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> DirectTouchBoardView {
         let view = DirectTouchBoardView(frame: .zero)
         view.backgroundColor = .clear
-        // Direct Touch 접근성 의미는 SwiftUI의 GameBoardShell이 소유한다.
-        // 이 UIView는 Direct Touch가 활성화된 뒤 실제 UIKit gesture만 받는다.
-        view.isAccessibilityElement = false
+        // 실제 제스처를 받는 UIKit view 자체가 VoiceOver의 Direct Touch 요소여야 한다.
+        // UIKit에서는 allowsDirectInteraction trait가 accessibilityDirectTouchOptions의 전제다.
+        view.isAccessibilityElement = true
+        view.accessibilityTraits = [.allowsDirectInteraction]
+        view.accessibilityDirectTouchOptions = [.requiresActivation, .silentOnTouch]
+        view.accessibilityLabel = accessibilityLabel
+        view.accessibilityValue = accessibilityValue
+        view.accessibilityHint = accessibilityHint
         view.callbacks = context.coordinator.callbacks
 
         // PC판 보드 탐색 방향: 왼쪽은 다음 칸(출발지 → 방콕), 오른쪽은 이전 칸(출발지 → 서울).
@@ -75,12 +84,17 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         playerInfoTap.numberOfTapsRequired = 2
         view.addGestureRecognizer(playerInfoTap)
 
+        context.coordinator.applyAccessibilityFocusRequest(to: view)
         return view
     }
 
     func updateUIView(_ uiView: DirectTouchBoardView, context: Context) {
         context.coordinator.parent = self
+        uiView.accessibilityLabel = accessibilityLabel
+        uiView.accessibilityValue = accessibilityValue
+        uiView.accessibilityHint = accessibilityHint
         uiView.callbacks = context.coordinator.callbacks
+        context.coordinator.applyAccessibilityFocusRequest(to: uiView)
     }
 
     private func addSwipe(
@@ -102,6 +116,7 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
 
         var parent: GameBoardDirectTouchSurface
         private var twoFingerWinner: TwoFingerWinner?
+        private var lastAccessibilityFocusRequest = 0
         private let rotorThreshold: CGFloat = .pi / 10
 
         init(parent: GameBoardDirectTouchSurface) {
@@ -110,6 +125,16 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
 
         var callbacks: DirectTouchBoardView.Callbacks {
             .init(onMagicTap: parent.onMagicTap, onEscape: parent.onEscape)
+        }
+
+        func applyAccessibilityFocusRequest(to view: DirectTouchBoardView) {
+            let request = parent.accessibilityFocusRequest
+            guard request > 0, request != lastAccessibilityFocusRequest else { return }
+            lastAccessibilityFocusRequest = request
+            DispatchQueue.main.async { [weak view] in
+                guard let view else { return }
+                UIAccessibility.post(notification: .layoutChanged, argument: view)
+            }
         }
 
         @objc func previousCell() { parent.onPreviousCell() }

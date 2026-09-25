@@ -3,10 +3,9 @@ import MarbleMobileCore
 
 struct GameRoomView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var showLeaveConfirmation = false
     @AccessibilityFocusState private var teamNameAccessibilityFocus: Bool
-    @AccessibilityFocusState private var boardAccessibilityFocus: Bool
+    @State private var boardAccessibilityFocusRequest = 0
 
     var body: some View {
         NavigationStack {
@@ -20,7 +19,8 @@ struct GameRoomView: View {
                     catalog: model.boardCatalog,
                     cursorIndex: model.boardCursor.index,
                     currentCellDescription: model.currentBoardAccessibilityDescription,
-                    directTouchAvailable: model.isBoardDirectTouchAreaAvailable && voiceOverEnabled,
+                    directTouchAvailable: model.isBoardDirectTouchAreaAvailable,
+                    accessibilityFocusRequest: boardAccessibilityFocusRequest,
                     onPreviousCell: model.moveBoardCursorBackward,
                     onNextCell: model.moveBoardCursorForward,
                     onPreviousCityCost: model.cycleBoardCityCostBackward,
@@ -43,7 +43,6 @@ struct GameRoomView: View {
                     onLineC: { model.jumpToBoardLine("C") },
                     onLineD: { model.jumpToBoardLine("D") }
                 )
-                .accessibilityFocused($boardAccessibilityFocus)
 
                 chatArea
             }
@@ -77,7 +76,7 @@ struct GameRoomView: View {
             }
             .onChange(of: model.hasJoinedTeam) { wasJoined, isJoined in
                 guard !wasJoined, isJoined else { return }
-                DispatchQueue.main.async { boardAccessibilityFocus = true }
+                DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
             }
             .sheet(item: $model.aiSelectionRequest) { request in
                 AIPlayerSelectionSheet(request: request)
@@ -93,8 +92,7 @@ struct GameRoomView: View {
 
     private func restoreBoardAccessibilityFocus() {
         guard model.isBoardReady else { return }
-        boardAccessibilityFocus = false
-        DispatchQueue.main.async { boardAccessibilityFocus = true }
+        DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
     }
 
     private var interactionSheetBinding: Binding<InteractionRequestSnapshot?> {
@@ -196,6 +194,7 @@ private struct GameBoardShell: View {
     let cursorIndex: Int
     let currentCellDescription: String
     let directTouchAvailable: Bool
+    let accessibilityFocusRequest: Int
     let onPreviousCell: () -> Void
     let onNextCell: () -> Void
     let onPreviousCityCost: () -> Void
@@ -238,6 +237,10 @@ private struct GameBoardShell: View {
 
                 if directTouchAvailable {
                     GameBoardDirectTouchSurface(
+                        accessibilityLabel: "게임 보드",
+                        accessibilityValue: currentCellDescription,
+                        accessibilityHint: "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. VoiceOver 로터 또는 빠른 설정에서 다이렉트 터치를 켜거나 끌 수도 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 게임 메시지로 포커스를 이동합니다.",
+                        accessibilityFocusRequest: accessibilityFocusRequest,
                         onPreviousCell: onPreviousCell,
                         onNextCell: onNextCell,
                         onPreviousCityCost: onPreviousCityCost,
@@ -269,18 +272,6 @@ private struct GameBoardShell: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("게임 보드")
-        .accessibilityValue(currentCellDescription)
-        .accessibilityHint(
-            directTouchAvailable
-                ? "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. VoiceOver 로터, 빠른 설정 또는 앱별 다이렉트 터치 설정도 사용할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 게임 메시지로 포커스를 이동합니다."
-                : "현재는 다이렉트 터치를 사용할 수 없습니다."
-        )
-        .accessibilityDirectTouch(
-            directTouchAvailable,
-            options: [.requiresActivation, .silentOnTouch]
-        )
     }
 
     @ViewBuilder
