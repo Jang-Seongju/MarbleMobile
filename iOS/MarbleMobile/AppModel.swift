@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     enum Screen { case login, lobby, gameRoom }
     enum LobbyPage { case users, rooms }
     enum EntryPhase: Equatable { case inactive, connecting, awaitingSessionEntry, active, recoveryRequired }
+    enum IslandContextAction: Equatable { case escapeCard, bail }
 
     @Published var screen: Screen = .login
     @Published var session: AuthenticatedSession?
@@ -46,7 +47,6 @@ final class AppModel: ObservableObject {
     @Published var boardCatalog: BoardCatalogSnapshot?
     @Published var staticInformationCatalog: StaticInformationCatalogSnapshot?
     @Published var boardCursor = BoardCursorState()
-    @Published var boardCostCycle = CityCostCycleState()
     @Published var gameRotor = GameRotorState()
     @Published var aiSelectionRequest: AIPlayerSelectionRequest?
     @Published var selectedAIIDs: Set<String> = []
@@ -67,7 +67,13 @@ final class AppModel: ObservableObject {
     @Published var chatDraft = ""
     @Published var isTeamCreationPending = false
     @Published var isLeaveRoomPending = false
+    @Published private(set) var heldCardID: String?
+    @Published private(set) var heldCardName: String?
+    @Published private(set) var bailPaymentSelected = false
+    @Published private(set) var islandEscapeCardSelected = false
+    @Published private(set) var salaryBoosterSelected = false
     private var isRoomEntryRecoveryPending = false
+    private var pendingSilentHeldCardQuery = false
     private var aiSelectionHistory: [String] = []
     private var activatedInteractionRequestIDs: Set<String> = []
     private var pendingRotorDirections: [String: [Bool]] = [:]
@@ -301,6 +307,32 @@ final class AppModel: ObservableObject {
             && (activeInteraction == nil || isWorldTravelDestinationSelectionActive)
     }
 
+    private var localGamePlayer: GamePlayerSnapshot? {
+        guard let myPlayerID else { return nil }
+        return gamePlayers.first { $0.playerID == myPlayerID }
+    }
+
+    var islandContextAction: IslandContextAction? {
+        guard gameIsActive, !gameFinished, activeInteraction == nil, aiSelectionRequest == nil,
+              let player = localGamePlayer, !player.isBankrupt, player.isStranded else { return nil }
+        if heldCardID == "island_escape" { return .escapeCard }
+        return player.marble >= 200_000 ? .bail : nil
+    }
+
+    var islandContextActionSelected: Bool {
+        switch islandContextAction {
+        case .escapeCard: return islandEscapeCardSelected
+        case .bail: return bailPaymentSelected
+        case nil: return false
+        }
+    }
+
+    var salaryBoosterContextAvailable: Bool {
+        guard gameIsActive, !gameFinished, activeInteraction == nil, aiSelectionRequest == nil,
+              let player = localGamePlayer, !player.isBankrupt else { return false }
+        return heldCardID == "salary_booster"
+    }
+
     var canRollDice: Bool {
         gameIsActive
             && !gameFinished
@@ -336,34 +368,43 @@ final class AppModel: ObservableObject {
         return text.isEmpty ? cell.shortDescription : text
     }
 
-    func moveBoardCursorForward() {
-        guard boardCatalog != nil else {
+    func moveBoardLeft() { moveBoardCursor(.left) }
+    func moveBoardRight() { moveBoardCursor(.right) }
+    func moveBoardUp() { moveBoardCursor(.up) }
+    func moveBoardDown() { moveBoardCursor(.down) }
+
+    private func moveBoardCursor(_ direction: BoardNavigationDirection) {
+        guard let catalog = boardCatalog else {
             announce("보드 정보가 아직 준비되지 않았습니다.")
             return
         }
-        boardCursor.moveNext()
-        boardCostCycle.reset()
-        gameRotor.resetUnitBuildingSelection()
-        announceCurrentBoardCell()
-    }
-
-    func moveBoardCursorBackward() {
-        guard boardCatalog != nil else {
-            announce("보드 정보가 아직 준비되지 않았습니다.")
+        guard let target = catalog.adjacentCell(from: boardCursor.index, direction: direction) else {
+            playBoardBoundaryWarning()
             return
         }
-        boardCursor.movePrevious()
-        boardCostCycle.reset()
-        gameRotor.resetUnitBuildingSelection()
+        boardCursor.jump(to: target.index)
+        gameRotor.resetBoardCellSelections()
         announceCurrentBoardCell()
     }
 
-    func cycleBoardCityCostForward() {
-        queryBoardCityCost(boardCostCycle.moveForward())
+    func playBoardBoundaryWarning() {
+        _ = audio.playSFX("board_boundary.wav")
     }
 
-    func cycleBoardCityCostBackward() {
-        queryBoardCityCost(boardCostCycle.moveBackward())
+    func toggleIslandContextAction() {
+        switch islandContextAction {
+        case .escapeCard:
+            socket.send(WireMessages.toggleHeldCardUse())
+        case .bail:
+            socket.send(WireMessages.toggleBailPayment())
+        case nil:
+            break
+        }
+    }
+
+    func toggleSalaryBoosterUse() {
+        guard salaryBoosterContextAvailable else { return }
+        socket.send(WireMessages.toggleHeldCardUse())
     }
 
     func performBoardMagicTap() {
@@ -434,8 +475,7 @@ final class AppModel: ObservableObject {
             return
         }
         boardCursor.jump(to: target)
-        boardCostCycle.reset()
-        gameRotor.resetUnitBuildingSelection()
+        gameRotor.resetBoardCellSelections()
         announceCurrentBoardCell()
     }
 
@@ -467,6 +507,8 @@ final class AppModel: ObservableObject {
 
     private func moveGameRotorSelection(forward: Bool) {
         switch gameRotor.category {
+        case .cityInformation:
+            announce("도시 정보는 두 손가락 위아래 쓸기로 조회합니다.")
         case .playerInformation:
             guard let target = gameRotor.movePlayerTarget(
                 forward: forward,
@@ -501,6 +543,8 @@ final class AppModel: ObservableObject {
 
     private func moveGameRotorDetail(forward: Bool) {
         switch gameRotor.category {
+        case .cityInformation:
+            requestRotorCityInformation(forward: forward)
         case .playerInformation:
             requestRotorPlayerCity(forward: forward)
         case .monopolyInformation:
@@ -604,6 +648,47 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func requestRotorCityInformation(forward: Bool) {
+        guard let cell = currentBoardCell, cell.isCity, let cityID = cell.cityID else {
+            announce("도시가 아닙니다")
+            return
+        }
+        let kind = gameRotor.moveCityInformationKind(forward: forward)
+        if kind == .description {
+            if gameIsActive || gameFinished {
+                socket.send(WireMessages.informationQuery(queryType: "city_description", cityID: cityID))
+                return
+            }
+            guard let catalog = staticInformationCatalog else {
+                announce("정적 정보가 아직 준비되지 않았습니다.")
+                return
+            }
+            let text = InformationResultPresenter.format(
+                queryType: "city_description",
+                result: InformationResult(info: catalog.cityDescription(cityID: cityID)),
+                myPlayerID: myPlayerID
+            ) ?? "도시 설명을 찾을 수 없습니다."
+            announce(text)
+            return
+        }
+        guard let costType = kind.cityCostType else { return }
+        guard gameIsActive || gameFinished else {
+            let guide: String
+            switch costType {
+            case "toll": guide = CityCostQueryKind.toll.preGameGuide
+            case "acquisition": guide = CityCostQueryKind.acquisition.preGameGuide
+            default: guide = CityCostQueryKind.sale.preGameGuide
+            }
+            announce(guide)
+            return
+        }
+        socket.send(WireMessages.informationQuery(
+            queryType: "city_cost",
+            cityID: cityID,
+            payload: ["cost_type": costType]
+        ))
+    }
+
     private func requestRotorUnitCost(forward: Bool) {
         guard let cell = currentBoardCell, cell.isCity, let cityID = cell.cityID else {
             announce("도시가 아닙니다")
@@ -644,25 +729,6 @@ final class AppModel: ObservableObject {
         announce(currentBoardAccessibilityDescription)
     }
 
-    private func queryBoardCityCost(_ kind: CityCostQueryKind) {
-        guard let cell = currentBoardCell else {
-            announce("현재 칸 정보를 찾을 수 없습니다.")
-            return
-        }
-        guard cell.isCity, let cityID = cell.cityID else {
-            announce("도시가 아닙니다")
-            return
-        }
-        guard gameIsActive else {
-            announce(kind.preGameGuide)
-            return
-        }
-        socket.send(WireMessages.informationQuery(
-            queryType: "city_cost",
-            cityID: cityID,
-            payload: ["cost_type": kind.rawValue]
-        ))
-    }
 
     func requestGameStart() {
         guard roomEntry != nil, hasJoinedTeam, !gameIsActive, !isGameStartPending else { return }
@@ -957,7 +1023,8 @@ final class AppModel: ObservableObject {
             activatedInteractionRequestIDs = []
             boardCatalog = snapshot.boardCatalog
             boardCursor.reset()
-            boardCostCycle.reset()
+                resetPrivateTurnPreparationState()
+            refreshHeldCardStateSilently()
             let message = "게임을 시작합니다."
             output.emit(.gameEvent(message, root: .sequence([
                 .voice(clip: "game_start.wav", fallbackTTS: message)
@@ -976,6 +1043,7 @@ final class AppModel: ObservableObject {
             gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: snapshot.players)
             if let current = snapshot.currentPlayerID { currentPlayerID = current }
             refreshAIRemainderOutputMode()
+            refreshHeldCardStateSilently()
         } catch {
             return
         }
@@ -984,6 +1052,8 @@ final class AppModel: ObservableObject {
     private func handleNotification(_ data: [String: Any]) {
         guard let type = GameplayParser.notificationType(data),
               let payload = GameplayParser.notificationPayload(data) else { return }
+
+        updatePrivateTurnPreparationState(notificationType: type, payload: payload)
 
         if type == "turn_started" {
             activatePendingAIRemainderOnTurnStarted()
@@ -1049,8 +1119,7 @@ final class AppModel: ObservableObject {
                   let index = WireScalarParser.exactInt(payload["to_index"]), (1...32).contains(index),
                   playerID == myPlayerID {
             boardCursor.jump(to: index)
-            boardCostCycle.reset()
-            gameRotor.resetUnitBuildingSelection()
+                gameRotor.resetBoardCellSelections()
         }
 
         let context = GamePresentationContext(
@@ -1072,6 +1141,82 @@ final class AppModel: ObservableObject {
             }
         }
         if type == "game_over" { resetAIRemainderOutputMode() }
+    }
+
+    private func refreshHeldCardStateSilently() {
+        guard gameIsActive, let myPlayerID, !pendingSilentHeldCardQuery else { return }
+        pendingSilentHeldCardQuery = true
+        socket.send(WireMessages.informationQuery(queryType: "held_card", playerID: myPlayerID))
+    }
+
+    private func applyHeldCardInformation(_ result: InformationResult) {
+        heldCardID = result.info?.heldCardID
+        heldCardName = result.info?.heldCardName
+        if heldCardID != "island_escape" { islandEscapeCardSelected = false }
+        if heldCardID != "salary_booster" { salaryBoosterSelected = false }
+    }
+
+    private func resetPrivateTurnPreparationState() {
+        heldCardID = nil
+        heldCardName = nil
+        bailPaymentSelected = false
+        islandEscapeCardSelected = false
+        salaryBoosterSelected = false
+        pendingSilentHeldCardQuery = false
+    }
+
+    private func updatePrivateTurnPreparationState(notificationType: String, payload: [String: Any]) {
+        let playerID = WireScalarParser.exactInt(payload["player_id"])
+        if let playerID, let myPlayerID, playerID != myPlayerID { return }
+
+        switch notificationType {
+        case "card_held":
+            heldCardID = payload["card_id"] as? String
+            heldCardName = payload["card_name"] as? String
+            if heldCardID != "island_escape" { islandEscapeCardSelected = false }
+            if heldCardID != "salary_booster" { salaryBoosterSelected = false }
+        case "bail_payment_selection_changed":
+            guard let selected = payload["selected"] as? Bool else { return }
+            bailPaymentSelected = selected
+            if selected { islandEscapeCardSelected = false }
+        case "held_card_use_selection_changed":
+            guard let selected = payload["selected"] as? Bool,
+                  let cardType = payload["card_type"] as? String else { return }
+            if cardType == "island_escape" {
+                islandEscapeCardSelected = selected
+                if selected { bailPaymentSelected = false }
+            } else if cardType == "salary_booster" {
+                salaryBoosterSelected = selected
+            }
+        case "bail_paid":
+            bailPaymentSelected = false
+        case "player_escaped_island":
+            bailPaymentSelected = false
+            islandEscapeCardSelected = false
+            refreshHeldCardStateSilently()
+        case "salary_paid":
+            if salaryBoosterSelected { salaryBoosterSelected = false }
+            refreshHeldCardStateSilently()
+        case "player_effect_activated":
+            if payload["effect_type"] as? String == "salary_booster" {
+                salaryBoosterSelected = false
+                refreshHeldCardStateSilently()
+            }
+        default:
+            break
+        }
+    }
+
+    func announceBoardInspectionStarted() {
+        announce("보드 조회 모드입니다. 방향 제스처와 정보 제스처를 사용할 수 있습니다.")
+    }
+
+    func announceBoardInspectionFinished() {
+        announce("인터렉션으로 돌아갑니다.")
+    }
+
+    func announceBoardInspectionActionBlocked() {
+        announce("보드 조회 중에는 게임 행동을 실행할 수 없습니다.")
     }
 
     private func refreshAIRemainderOutputMode() {
@@ -1161,6 +1306,12 @@ final class AppModel: ObservableObject {
               let payload = data["payload"] as? [String: Any],
               let result = InformationParser.result(payload["result"])
         else { return nil }
+
+        if queryType == "held_card", pendingSilentHeldCardQuery {
+            pendingSilentHeldCardQuery = false
+            applyHeldCardInformation(result)
+            return nil
+        }
 
         if queryType == "city_info", let filter = payload["filter"] as? String {
             if let correctedIndex = result.index {
@@ -1261,8 +1412,7 @@ final class AppModel: ObservableObject {
               let index = boardCatalog?.cells.first(where: { $0.cityID == cityID })?.index
         else { return }
         boardCursor.jump(to: index)
-        boardCostCycle.reset()
-        gameRotor.resetUnitBuildingSelection()
+        gameRotor.resetBoardCellSelections()
     }
 
     func createTeamFromDraft() {
@@ -1483,7 +1633,6 @@ final class AppModel: ObservableObject {
         boardCatalog = nil
         staticInformationCatalog = nil
         boardCursor.reset()
-        boardCostCycle.reset()
         gameRotor.reset()
         clearGameplayState()
         teamNameDraft = session?.identity.nickname ?? ""
@@ -1502,8 +1651,7 @@ final class AppModel: ObservableObject {
             if snapshot.boardCatalog.cell(at: boardCursor.index) == nil {
                 boardCursor.reset()
             }
-            boardCostCycle.reset()
-            gameRotor.resetUnitBuildingSelection()
+                gameRotor.resetBoardCellSelections()
         } catch {
             // PC 일반 room 경로와 같이 malformed 정적 보드는 기존 정상 상태를
             // 임의 데이터로 덮어쓰지 않고 무시한다.
@@ -1566,6 +1714,7 @@ final class AppModel: ObservableObject {
         turnCommandWindowOpen = false
         turnActionStarted = false
         isGameStartPending = false
+        resetPrivateTurnPreparationState()
         gameRotor.reset()
         pendingRotorDirections = [:]
         resetAIRemainderOutputMode()
@@ -1579,7 +1728,6 @@ final class AppModel: ObservableObject {
         boardCatalog = nil
         staticInformationCatalog = nil
         boardCursor.reset()
-        boardCostCycle.reset()
         gameRotor.reset()
         clearGameplayState()
         teamNameDraft = ""

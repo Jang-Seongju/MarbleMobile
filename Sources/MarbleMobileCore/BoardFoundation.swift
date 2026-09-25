@@ -43,6 +43,14 @@ public struct BoardCellSnapshot: Identifiable, Equatable, Sendable {
     }
 }
 
+
+public enum BoardNavigationDirection: String, CaseIterable, Equatable, Sendable {
+    case left
+    case right
+    case up
+    case down
+}
+
 public struct BoardCatalogSnapshot: Equatable, Sendable {
     public let cells: [BoardCellSnapshot]
 
@@ -56,6 +64,37 @@ public struct BoardCatalogSnapshot: Equatable, Sendable {
 
     public func cell(row: Int, column: Int) -> BoardCellSnapshot? {
         cells.first { $0.row == row && $0.column == column }
+    }
+
+    /// client(393) BoardNavigator와 동일한 2D 공간 탐색.
+    /// 상/하단은 좌우, 좌/우측은 상하만 허용하며 모서리에서는
+    /// 보드 안쪽의 정확히 두 방향만 열린다.
+    public func adjacentCell(
+        from index: Int,
+        direction: BoardNavigationDirection
+    ) -> BoardCellSnapshot? {
+        guard let current = cell(at: index) else { return nil }
+        let row = current.row
+        let column = current.column
+        let target: (row: Int, column: Int)?
+
+        switch direction {
+        case .left:
+            guard row == 0 || row == 8, column > 0 else { return nil }
+            target = (row, column - 1)
+        case .right:
+            guard row == 0 || row == 8, column < 8 else { return nil }
+            target = (row, column + 1)
+        case .up:
+            guard column == 0 || column == 8, row > 0 else { return nil }
+            target = (row - 1, column)
+        case .down:
+            guard column == 0 || column == 8, row < 8 else { return nil }
+            target = (row + 1, column)
+        }
+
+        guard let target else { return nil }
+        return cell(row: target.row, column: target.column)
     }
 }
 

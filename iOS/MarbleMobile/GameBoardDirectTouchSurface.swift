@@ -8,10 +8,10 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     let accessibilityValue: String
     let accessibilityHint: String
     let accessibilityFocusRequest: Int
-    let onPreviousCell: () -> Void
-    let onNextCell: () -> Void
-    let onPreviousCityCost: () -> Void
-    let onNextCityCost: () -> Void
+    let onMoveLeft: () -> Void
+    let onMoveRight: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
     let onExitDirectTouch: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
@@ -44,11 +44,12 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         view.accessibilityHint = accessibilityHint
         view.callbacks = context.coordinator.callbacks
 
-        // PC판 보드 탐색 방향: 왼쪽은 다음 칸(출발지 → 방콕), 오른쪽은 이전 칸(출발지 → 서울).
-        addSwipe(.left, touches: 1, selector: #selector(Coordinator.nextCell), to: view, coordinator: context.coordinator)
-        addSwipe(.right, touches: 1, selector: #selector(Coordinator.previousCell), to: view, coordinator: context.coordinator)
-        addSwipe(.up, touches: 1, selector: #selector(Coordinator.previousCityCost), to: view, coordinator: context.coordinator)
-        addSwipe(.down, touches: 1, selector: #selector(Coordinator.nextCityCost), to: view, coordinator: context.coordinator)
+        // client(393)과 동일한 2D 공간 탐색. 한 손가락 4방향은
+        // 비용 조회와 섞지 않고 오직 보드의 실제 인접 방향만 전달한다.
+        addSwipe(.left, touches: 1, selector: #selector(Coordinator.moveLeft), to: view, coordinator: context.coordinator)
+        addSwipe(.right, touches: 1, selector: #selector(Coordinator.moveRight), to: view, coordinator: context.coordinator)
+        addSwipe(.up, touches: 1, selector: #selector(Coordinator.moveUp), to: view, coordinator: context.coordinator)
+        addSwipe(.down, touches: 1, selector: #selector(Coordinator.moveDown), to: view, coordinator: context.coordinator)
 
         // 앱 소유 Game Rotor. 좌/우는 하위 선택, 아래/위는 다음/이전 세부 항목.
         addSwipe(.left, touches: 2, selector: #selector(Coordinator.twoFingerSwipe(_:)), to: view, coordinator: context.coordinator)
@@ -137,10 +138,10 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
             }
         }
 
-        @objc func previousCell() { parent.onPreviousCell() }
-        @objc func nextCell() { parent.onNextCell() }
-        @objc func previousCityCost() { parent.onPreviousCityCost() }
-        @objc func nextCityCost() { parent.onNextCityCost() }
+        @objc func moveLeft() { parent.onMoveLeft() }
+        @objc func moveRight() { parent.onMoveRight() }
+        @objc func moveUp() { parent.onMoveUp() }
+        @objc func moveDown() { parent.onMoveDown() }
         @objc func exitDirectTouch() { parent.onExitDirectTouch() }
         @objc func selectedPlayerInfo() { parent.onSelectedPlayerInfo() }
         @objc func lineA() { parent.onLineA() }

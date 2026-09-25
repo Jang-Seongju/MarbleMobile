@@ -14,6 +14,8 @@ struct GameRoomView: View {
 
                 teamArea
 
+                gameActionControls
+
                 GameBoardShell(
                     messages: model.roomMessages,
                     catalog: model.boardCatalog,
@@ -21,10 +23,12 @@ struct GameRoomView: View {
                     currentCellDescription: model.currentBoardAccessibilityDescription,
                     directTouchAvailable: model.isBoardDirectTouchAreaAvailable,
                     accessibilityFocusRequest: boardAccessibilityFocusRequest,
-                    onPreviousCell: model.moveBoardCursorBackward,
-                    onNextCell: model.moveBoardCursorForward,
-                    onPreviousCityCost: model.cycleBoardCityCostBackward,
-                    onNextCityCost: model.cycleBoardCityCostForward,
+                    directTouchHint: "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 게임 메시지로 이동합니다.",
+                    onExitDirectTouchOverride: nil,
+                    onMoveLeft: model.moveBoardLeft,
+                    onMoveRight: model.moveBoardRight,
+                    onMoveUp: model.moveBoardUp,
+                    onMoveDown: model.moveBoardDown,
                     onMagicTap: model.performBoardMagicTap,
                     onEscape: {
                         if !model.performBoardEscape() {
@@ -113,10 +117,6 @@ struct GameRoomView: View {
 
     private var topControls: some View {
         HStack(spacing: 8) {
-            primaryAction
-
-            Button("대기실 보기") { model.showLobbyFromGameRoom() }
-
             Menu("메뉴") {
                 if let room = model.roomEntry {
                     Text("방 번호: \(room.roomID)")
@@ -125,10 +125,57 @@ struct GameRoomView: View {
                 }
             }
 
+            Button("대기실 보기") { model.showLobbyFromGameRoom() }
+
             Button("나가기", role: .destructive) {
                 showLeaveConfirmation = true
             }
             .disabled(model.isLeaveRoomPending || model.isTeamCreationPending)
+        }
+        .buttonStyle(.bordered)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var gameActionControls: some View {
+        HStack(spacing: 8) {
+            primaryAction
+                .frame(maxWidth: .infinity)
+
+            Group {
+                if let action = model.islandContextAction {
+                    Button {
+                        model.toggleIslandContextAction()
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text(action == .escapeCard ? "무인도 탈출 카드 사용" : "보석금 지불")
+                            Text(model.islandContextActionSelected ? "선택" : "해제")
+                                .font(.caption)
+                        }
+                    }
+                    .accessibilityLabel(action == .escapeCard ? "무인도 탈출 카드 사용" : "보석금 지불")
+                    .accessibilityValue(model.islandContextActionSelected ? "선택" : "해제")
+                } else {
+                    Color.clear.accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            Group {
+                if model.salaryBoosterContextAvailable {
+                    Button { model.toggleSalaryBoosterUse() } label: {
+                        VStack(spacing: 2) {
+                            Text("월급 부스터 사용")
+                            Text(model.salaryBoosterSelected ? "선택" : "해제")
+                                .font(.caption)
+                        }
+                    }
+                    .accessibilityLabel("월급 부스터 사용")
+                    .accessibilityValue(model.salaryBoosterSelected ? "선택" : "해제")
+                } else {
+                    Color.clear.accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
         .frame(maxWidth: .infinity)
@@ -186,7 +233,7 @@ struct GameRoomView: View {
     }
 }
 
-private struct GameBoardShell: View {
+struct GameBoardShell: View {
     @AccessibilityFocusState private var messageAccessibilityFocus: Bool
 
     let messages: [String]
@@ -195,10 +242,12 @@ private struct GameBoardShell: View {
     let currentCellDescription: String
     let directTouchAvailable: Bool
     let accessibilityFocusRequest: Int
-    let onPreviousCell: () -> Void
-    let onNextCell: () -> Void
-    let onPreviousCityCost: () -> Void
-    let onNextCityCost: () -> Void
+    let directTouchHint: String
+    let onExitDirectTouchOverride: (() -> Void)?
+    let onMoveLeft: () -> Void
+    let onMoveRight: () -> Void
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
     let onSelectedPlayerInfo: () -> Void
@@ -239,16 +288,20 @@ private struct GameBoardShell: View {
                     GameBoardDirectTouchSurface(
                         accessibilityLabel: "게임 보드",
                         accessibilityValue: currentCellDescription,
-                        accessibilityHint: "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. VoiceOver 로터 또는 빠른 설정에서 다이렉트 터치를 켜거나 끌 수도 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 게임 메시지로 포커스를 이동합니다.",
+                        accessibilityHint: directTouchHint,
                         accessibilityFocusRequest: accessibilityFocusRequest,
-                        onPreviousCell: onPreviousCell,
-                        onNextCell: onNextCell,
-                        onPreviousCityCost: onPreviousCityCost,
-                        onNextCityCost: onNextCityCost,
+                        onMoveLeft: onMoveLeft,
+                        onMoveRight: onMoveRight,
+                        onMoveUp: onMoveUp,
+                        onMoveDown: onMoveDown,
                         onExitDirectTouch: {
-                            messageAccessibilityFocus = false
-                            DispatchQueue.main.async {
-                                messageAccessibilityFocus = true
+                            if let onExitDirectTouchOverride {
+                                onExitDirectTouchOverride()
+                            } else {
+                                messageAccessibilityFocus = false
+                                DispatchQueue.main.async {
+                                    messageAccessibilityFocus = true
+                                }
                             }
                         },
                         onMagicTap: onMagicTap,

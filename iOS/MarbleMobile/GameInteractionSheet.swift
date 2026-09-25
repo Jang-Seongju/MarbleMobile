@@ -11,44 +11,23 @@ struct GameInteractionSheet: View {
     @State private var selectedByGroup: [String: String] = [:]
     @State private var selectedBuildCityID: Int?
     @State private var selectedBuildIDs: Set<String> = []
+    @State private var isBoardInspection = false
+    @State private var boardInspectionFocusRequest = 0
     @AccessibilityFocusState private var primaryFocus: Bool
+    @AccessibilityFocusState private var returnToInteractionFocus: Bool
+    @AccessibilityFocusState private var boardLookupAccessibilityFocus: Bool
+    @Namespace private var boardInspectionRotorNamespace
 
     var body: some View {
         NavigationStack {
-            Form {
-                let description = model.interactionDescription(request)
-                if !description.isEmpty {
-                    Section {
-                        Text(description)
-                            .accessibilityFocused($primaryFocus)
-                    }
-                }
-
-                interactionContent
-
-                if model.interactionResponseSubmitted {
-                    Section {
-                        ProgressView("응답 처리 중")
-                    }
-                }
-
-                if request.cancellable && request.interactionType != "confirm" {
-                    Section {
-                        Button("취소", role: .cancel) { model.cancelActiveInteraction() }
-                            .disabled(model.interactionResponseSubmitted)
-                    }
-                }
-            }
-            .navigationTitle(request.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .interactiveDismissDisabled()
-            .accessibilityAction(.escape) {
-                if request.cancellable {
-                    model.cancelActiveInteraction()
+            Group {
+                if isBoardInspection {
+                    boardInspectionContent
                 } else {
-                    model.announce("취소할 수 없습니다.")
+                    interactionForm
                 }
             }
+            .interactiveDismissDisabled()
             .onAppear {
                 if request.interactionType == "select_one", selectedOne == nil {
                     selectedOne = request.items.first(where: { !$0.disabled })?.id
@@ -59,6 +38,117 @@ struct GameInteractionSheet: View {
                 DispatchQueue.main.async { primaryFocus = true }
             }
         }
+    }
+
+    private var interactionForm: some View {
+        Form {
+            let description = model.interactionDescription(request)
+            if !description.isEmpty {
+                Section {
+                    Text(description)
+                        .accessibilityFocused($primaryFocus)
+                }
+            }
+
+            Section {
+                Button("보드 조회") { enterBoardInspection() }
+                    .disabled(model.interactionResponseSubmitted || !model.isBoardReady)
+                    .accessibilityRotorEntry(id: "board-inspection", in: boardInspectionRotorNamespace)
+                    .accessibilityFocused($boardLookupAccessibilityFocus)
+            }
+
+            interactionContent
+
+            if model.interactionResponseSubmitted {
+                Section {
+                    ProgressView("응답 처리 중")
+                }
+            }
+
+            if request.cancellable && request.interactionType != "confirm" {
+                Section {
+                    Button("취소", role: .cancel) { model.cancelActiveInteraction() }
+                        .disabled(model.interactionResponseSubmitted)
+                }
+            }
+        }
+        .navigationTitle(request.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityElement(children: .contain)
+        .accessibilityRotor("보드 조회") {
+            AccessibilityRotorEntry(
+                "보드 조회",
+                id: "board-inspection",
+                in: boardInspectionRotorNamespace
+            )
+        }
+        .accessibilityAction(.escape) {
+            if request.cancellable {
+                model.cancelActiveInteraction()
+            } else {
+                model.announce("취소할 수 없습니다.")
+            }
+        }
+    }
+
+    private var boardInspectionContent: some View {
+        VStack(spacing: 8) {
+            Button("인터렉션으로 돌아가기") { exitBoardInspection() }
+                .buttonStyle(.borderedProminent)
+                .accessibilityFocused($returnToInteractionFocus)
+
+            GameBoardShell(
+                messages: model.roomMessages,
+                catalog: model.boardCatalog,
+                cursorIndex: model.boardCursor.index,
+                currentCellDescription: model.currentBoardAccessibilityDescription,
+                directTouchAvailable: model.isBoardReady,
+                accessibilityFocusRequest: boardInspectionFocusRequest,
+                directTouchHint: "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다.",
+                onExitDirectTouchOverride: focusReturnToInteractionButton,
+                onMoveLeft: model.moveBoardLeft,
+                onMoveRight: model.moveBoardRight,
+                onMoveUp: model.moveBoardUp,
+                onMoveDown: model.moveBoardDown,
+                onMagicTap: model.announceBoardInspectionActionBlocked,
+                onEscape: model.announceBoardInspectionActionBlocked,
+                onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
+                onRotorForward: model.rotateGameRotorForward,
+                onRotorBackward: model.rotateGameRotorBackward,
+                onPreviousRotorSelection: model.moveGameRotorSelectionBackward,
+                onNextRotorSelection: model.moveGameRotorSelectionForward,
+                onPreviousRotorDetail: model.moveGameRotorDetailBackward,
+                onNextRotorDetail: model.moveGameRotorDetailForward,
+                onLineA: { model.jumpToBoardLine("A") },
+                onLineB: { model.jumpToBoardLine("B") },
+                onLineC: { model.jumpToBoardLine("C") },
+                onLineD: { model.jumpToBoardLine("D") }
+            )
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+        .navigationTitle("보드 조회")
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityAction(.escape) { exitBoardInspection() }
+    }
+
+    private func enterBoardInspection() {
+        guard model.isBoardReady, !model.interactionResponseSubmitted else { return }
+        isBoardInspection = true
+        model.announceBoardInspectionStarted()
+        DispatchQueue.main.async { boardInspectionFocusRequest &+= 1 }
+    }
+
+    private func exitBoardInspection() {
+        guard isBoardInspection else { return }
+        isBoardInspection = false
+        model.announceBoardInspectionFinished()
+        DispatchQueue.main.async { boardLookupAccessibilityFocus = true }
+    }
+
+    private func focusReturnToInteractionButton() {
+        returnToInteractionFocus = false
+        DispatchQueue.main.async { returnToInteractionFocus = true }
     }
 
     @ViewBuilder

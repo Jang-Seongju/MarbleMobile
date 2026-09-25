@@ -1,6 +1,7 @@
 import Foundation
 
 public enum GameRotorCategory: Int, CaseIterable, Equatable, Sendable {
+    case cityInformation
     case playerInformation
     case monopolyInformation
     case cityStatusInformation
@@ -8,10 +9,36 @@ public enum GameRotorCategory: Int, CaseIterable, Equatable, Sendable {
 
     public var displayName: String {
         switch self {
+        case .cityInformation: return "도시 정보"
         case .playerInformation: return "플레이어 정보"
         case .monopolyInformation: return "독점 정보"
-        case .cityStatusInformation: return "도시 상태 정보"
-        case .unitCostInformation: return "단위 비용 조회"
+        case .cityStatusInformation: return "도시 상태"
+        case .unitCostInformation: return "건물별 비용"
+        }
+    }
+}
+
+public enum GameRotorCityInformationKind: Int, CaseIterable, Equatable, Sendable {
+    case toll
+    case acquisition
+    case sale
+    case description
+
+    public var displayName: String {
+        switch self {
+        case .toll: return "통행료"
+        case .acquisition: return "인수 비용"
+        case .sale: return "매각 금액"
+        case .description: return "도시 설명"
+        }
+    }
+
+    public var cityCostType: String? {
+        switch self {
+        case .toll: return "toll"
+        case .acquisition: return "acquisition"
+        case .sale: return "sale"
+        case .description: return nil
         }
     }
 }
@@ -73,7 +100,8 @@ public enum GameRotorUnitValueKind: Int, CaseIterable, Equatable, Sendable {
 }
 
 public struct GameRotorState: Equatable, Sendable {
-    public private(set) var category: GameRotorCategory = .playerInformation
+    public private(set) var category: GameRotorCategory = .cityInformation
+    public private(set) var cityInformationKind: GameRotorCityInformationKind = .toll
     public private(set) var playerTarget: GameRotorPlayerTarget?
     public private(set) var monopolyKind: GameRotorMonopolyKind = .achieved
     public private(set) var cityStatusKind: GameRotorCityStatusKind = .festival
@@ -120,6 +148,21 @@ public struct GameRotorState: Equatable, Sendable {
         guard let start = ids.firstIndex(of: myPlayerID) else { return [] }
         let rotated = Array(ids[start...]) + Array(ids[..<start])
         return rotated.map(GameRotorPlayerTarget.player) + [.unowned]
+    }
+
+    @discardableResult
+    public mutating func moveCityInformationKind(forward: Bool) -> GameRotorCityInformationKind {
+        if cityInformationTraversalStarted {
+            cityInformationKind = Self.next(
+                cityInformationKind,
+                in: GameRotorCityInformationKind.allCases,
+                step: forward ? 1 : -1
+            )
+        } else {
+            cityInformationTraversalStarted = true
+            if !forward { cityInformationKind = .description }
+        }
+        return cityInformationKind
     }
 
     @discardableResult
@@ -183,10 +226,20 @@ public struct GameRotorState: Equatable, Sendable {
         return unitValueKind
     }
 
+    public mutating func resetCityInformationSelection() {
+        cityInformationKind = .toll
+        cityInformationTraversalStarted = false
+    }
+
     public mutating func resetUnitBuildingSelection() {
         unitBuildingType = nil
         unitValueKind = .buildCost
         unitValueTraversalStarted = false
+    }
+
+    public mutating func resetBoardCellSelections() {
+        resetCityInformationSelection()
+        resetUnitBuildingSelection()
     }
 
     public mutating func nextOwnedCityIndex(forward: Bool) -> Int {
@@ -244,6 +297,7 @@ public struct GameRotorState: Equatable, Sendable {
         }
     }
 
+    private var cityInformationTraversalStarted = false
     private var unitValueTraversalStarted = false
 
     private static func next<T: Equatable>(_ current: T, in values: [T], step: Int) -> T {

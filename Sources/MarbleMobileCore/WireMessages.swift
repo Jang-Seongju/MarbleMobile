@@ -96,6 +96,14 @@ public enum WireMessages {
         ["type": "game_action", "action": "roll_dice"]
     }
 
+    public static func toggleBailPayment() -> [String: Any] {
+        ["type": "game_action", "action": "toggle_bail_payment"]
+    }
+
+    public static func toggleHeldCardUse() -> [String: Any] {
+        ["type": "game_action", "action": "toggle_held_card_use"]
+    }
+
     public static func interactionResponse(
         requestID: String,
         responseType: String,

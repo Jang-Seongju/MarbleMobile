@@ -662,6 +662,36 @@ extension Phase1CoreTests {
         XCTAssertThrowsError(try BoardCellsParser.parse(roundTripped))
     }
 
+    func testBoardSpatialNavigationMatchesClient393GridContract() throws {
+        let board = try BoardCellsParser.parse(boardCellsPayloadForDirectTouchTests())
+
+        // 우하단 출발지: 왼쪽(A라인)과 위(D라인)만 열린다.
+        XCTAssertEqual(board.adjacentCell(from: 1, direction: .left)?.index, 2)
+        XCTAssertEqual(board.adjacentCell(from: 1, direction: .up)?.index, 32)
+        XCTAssertNil(board.adjacentCell(from: 1, direction: .right))
+        XCTAssertNil(board.adjacentCell(from: 1, direction: .down))
+
+        // 좌하단 모서리 9: 오른쪽(A) / 위(B).
+        XCTAssertEqual(board.adjacentCell(from: 9, direction: .right)?.index, 8)
+        XCTAssertEqual(board.adjacentCell(from: 9, direction: .up)?.index, 10)
+        XCTAssertNil(board.adjacentCell(from: 9, direction: .left))
+        XCTAssertNil(board.adjacentCell(from: 9, direction: .down))
+
+        // 좌상단 17: 오른쪽(C) / 아래(B).
+        XCTAssertEqual(board.adjacentCell(from: 17, direction: .right)?.index, 18)
+        XCTAssertEqual(board.adjacentCell(from: 17, direction: .down)?.index, 16)
+
+        // 우상단 25: 왼쪽(C) / 아래(D).
+        XCTAssertEqual(board.adjacentCell(from: 25, direction: .left)?.index, 24)
+        XCTAssertEqual(board.adjacentCell(from: 25, direction: .down)?.index, 26)
+
+        // 중간 라인은 각 라인의 물리 축 외 방향을 허용하지 않는다.
+        XCTAssertEqual(board.adjacentCell(from: 5, direction: .left)?.index, 6)
+        XCTAssertNil(board.adjacentCell(from: 5, direction: .up))
+        XCTAssertEqual(board.adjacentCell(from: 13, direction: .up)?.index, 14)
+        XCTAssertNil(board.adjacentCell(from: 13, direction: .right))
+    }
+
     func testBoardCursorUsesCircularPreviousAndNextOrder() {
         var cursor = BoardCursorState(index: 1)
         XCTAssertEqual(cursor.movePrevious(), 32)
@@ -701,6 +731,14 @@ extension Phase1CoreTests {
         XCTAssertEqual(
             WireMessages.rollDice() as NSDictionary,
             ["type": "game_action", "action": "roll_dice"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.toggleBailPayment() as NSDictionary,
+            ["type": "game_action", "action": "toggle_bail_payment"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.toggleHeldCardUse() as NSDictionary,
+            ["type": "game_action", "action": "toggle_held_card_use"] as NSDictionary
         )
         XCTAssertEqual(
             WireMessages.interactionResponse(
@@ -1180,12 +1218,22 @@ extension Phase1CoreTests {
 
     func testGameRotorCategoryAndChildCyclesAreDeterministic() {
         var rotor = GameRotorState()
-        XCTAssertEqual(rotor.category, .playerInformation)
+        XCTAssertEqual(rotor.category, .cityInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .playerInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .monopolyInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .cityStatusInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .unitCostInformation)
-        XCTAssertEqual(rotor.moveCategoryForward(), .playerInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .cityInformation)
         XCTAssertEqual(rotor.moveCategoryBackward(), .unitCostInformation)
+
+        rotor.reset()
+        XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .toll)
+        XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .acquisition)
+        XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .sale)
+        XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .description)
+        XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .toll)
+        rotor.resetCityInformationSelection()
+        XCTAssertEqual(rotor.moveCityInformationKind(forward: false), .description)
 
         XCTAssertEqual(rotor.moveMonopolyKind(forward: true), .endingAlert)
         XCTAssertEqual(rotor.moveMonopolyKind(forward: true), .achieved)
