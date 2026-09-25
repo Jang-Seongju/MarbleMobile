@@ -288,11 +288,17 @@ final class AppModel: ObservableObject {
         hasJoinedTeam && boardCatalog != nil
     }
 
+    var isWorldTravelDestinationSelectionActive: Bool {
+        guard let request = activeInteraction else { return false }
+        return request.interactionType == "select_destination"
+            && request.missionType == "world_travel_destination"
+    }
+
     var isBoardDirectTouchEnabled: Bool {
         isBoardReady
             && boardAccessibilityMode == .directTouch
             && aiSelectionRequest == nil
-            && activeInteraction == nil
+            && (activeInteraction == nil || isWorldTravelDestinationSelectionActive)
     }
 
     var canRollDice: Bool {
@@ -374,7 +380,42 @@ final class AppModel: ObservableObject {
     }
 
     func performBoardMagicTap() {
+        if isWorldTravelDestinationSelectionActive {
+            confirmWorldTravelDestination()
+            return
+        }
         performRollDice()
+    }
+
+    func performBoardEscape() -> Bool {
+        guard isWorldTravelDestinationSelectionActive else { return false }
+        cancelActiveInteraction()
+        return true
+    }
+
+    private func confirmWorldTravelDestination() {
+        guard let request = activeInteraction,
+              request.interactionType == "select_destination",
+              request.missionType == "world_travel_destination",
+              !interactionResponseSubmitted
+        else { return }
+
+        let target = boardCursor.index
+        let valid: Bool
+        if !request.allowedDestinationIndices.isEmpty {
+            valid = request.allowedDestinationIndices.contains(target)
+        } else {
+            valid = !request.excludedIndices.contains(target)
+        }
+        guard valid else {
+            announce("선택할 수 없는 칸입니다.")
+            return
+        }
+
+        respondToInteraction(
+            responseType: "selected",
+            payload: ["target_index": target]
+        )
     }
 
     func performRollDice() {
@@ -703,6 +744,55 @@ final class AppModel: ObservableObject {
         aiSelectionHistory = []
     }
 
+    func interactionDescription(_ request: InteractionRequestSnapshot) -> String {
+        let cityInformation = Dictionary(uniqueKeysWithValues: gameCities.compactMap { info in
+            guard let cityID = info.cityID else { return nil }
+            return (cityID, info)
+        })
+        let playerNicknames = Dictionary(uniqueKeysWithValues: gamePlayers.map { ($0.playerID, $0.nickname) })
+        return InteractionRequestPresenter.description(
+            request,
+            cityInformation: cityInformation,
+            myPlayerID: myPlayerID,
+            playerNicknames: playerNicknames
+        )
+    }
+
+    func interactionEntryAnnouncement(_ request: InteractionRequestSnapshot) -> String {
+        let cityInformation = Dictionary(uniqueKeysWithValues: gameCities.compactMap { info in
+            guard let cityID = info.cityID else { return nil }
+            return (cityID, info)
+        })
+        let playerNicknames = Dictionary(uniqueKeysWithValues: gamePlayers.map { ($0.playerID, $0.nickname) })
+        return InteractionRequestPresenter.entryText(
+            request,
+            cityInformation: cityInformation,
+            myPlayerID: myPlayerID,
+            playerNicknames: playerNicknames
+        )
+    }
+
+    func liquidationMarbleInfo(
+        _ request: InteractionRequestSnapshot,
+        selectedSellValue: Int
+    ) -> String {
+        InteractionRequestPresenter.liquidationMarbleInfo(
+            request,
+            selectedSellValue: selectedSellValue
+        )
+    }
+
+    func announceLiquidationSelectionChanged(
+        _ request: InteractionRequestSnapshot,
+        selectedSellValue: Int
+    ) {
+        guard let text = InteractionRequestPresenter.liquidationSelectionChanged(
+            request,
+            selectedSellValue: selectedSellValue
+        ) else { return }
+        announce(text)
+    }
+
     func respondToInteraction(responseType: String, payload: [String: Any] = [:]) {
         guard let request = activeInteraction, !interactionResponseSubmitted else { return }
         interactionResponseSubmitted = true
@@ -722,18 +812,40 @@ final class AppModel: ObservableObject {
         respondToInteraction(responseType: "cancelled")
     }
 
-    func interactionItemLabel(_ item: InteractionItemSnapshot) -> String {
-        if let cityID = item.cityID,
-           let name = boardCatalog?.cells.first(where: { $0.cityID == cityID })?.name,
-           item.label == String(cityID) || item.label == "항목" {
-            return name
-        }
-        return item.label
-    }
+    func interactionItemLabel(
+        _ item: InteractionItemSnapshot,
+        request: InteractionRequestSnapshot,
+        role: String? = nil
+    ) -> String {
+        guard let cityID = item.cityID else { return item.label }
 
-    func destinationLabel(_ index: Int) -> String {
-        guard let cell = boardCatalog?.cell(at: index) else { return "\(index)번 칸" }
-        return "\(index)번, \(cell.shortDescription)"
+        let information: InformationInfo?
+        if let live = gameCities.first(where: { $0.cityID == cityID }) {
+            information = live
+        } else if let snapshot = item.information {
+            information = snapshot
+        } else if let cell = boardCatalog?.cells.first(where: { $0.cityID == cityID }) {
+            information = InformationInfo(
+                cityID: cityID,
+                cityName: cell.name,
+                groupName: cell.group
+            )
+        } else {
+            information = nil
+        }
+
+        guard let information else { return item.label }
+
+        let formatted = InteractionCityItemPresenter.format(
+            information: information,
+            missionType: request.missionType,
+            role: role,
+            cost: item.cost,
+            atMax: item.atMax,
+            disabled: item.disabled,
+            myPlayerID: myPlayerID
+        )
+        return formatted.isEmpty ? item.label : formatted
     }
 
     private func handleAISelectionRequired(_ data: [String: Any]) {
@@ -976,16 +1088,21 @@ final class AppModel: ObservableObject {
             activeInteraction = request
             interactionResponseSubmitted = false
             turnActionStarted = true
-            if request.interactionType == "select_destination",
-               activatedInteractionRequestIDs.insert(request.requestID).inserted {
-                socket.send(WireMessages.interactionPresentationActivate(requestID: request.requestID))
-            } else if request.interactionType != "acknowledge", !request.description.isEmpty {
-                output.emit(PresentationPlan(
-                    root: .tts(request.description),
-                    category: .gameplay,
-                    queuePolicy: .enqueue,
-                    interruptRetention: .dropPending
-                ))
+            if request.interactionType == "select_destination" {
+                boardAccessibilityMode = .directTouch
+                if activatedInteractionRequestIDs.insert(request.requestID).inserted {
+                    socket.send(WireMessages.interactionPresentationActivate(requestID: request.requestID))
+                }
+            } else if request.interactionType != "acknowledge" {
+                let announcement = interactionEntryAnnouncement(request)
+                if !announcement.isEmpty {
+                    output.emit(PresentationPlan(
+                        root: .tts(announcement),
+                        category: .gameplay,
+                        queuePolicy: .enqueue,
+                        interruptRetention: .dropPending
+                    ))
+                }
             }
         } catch {
             return

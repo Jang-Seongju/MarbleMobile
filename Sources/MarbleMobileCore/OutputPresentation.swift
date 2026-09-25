@@ -708,7 +708,7 @@ public enum GameNotificationPresenter {
 
     private static func interactionPresentationActivated(_ p: [String: Any]) -> PresentationPlan? {
         guard p["action_type"] as? String == "world_travel_destination" else { return nil }
-        let prompt = "목적지를 선택하고 엔터를 누르세요."
+        let prompt = "목적지를 선택하고 두 손가락으로 두 번 탭하세요."
         if bool(p["first_activation"]) == true {
             return PresentationPlan(
                 root: .sequence([

@@ -384,6 +384,64 @@ public enum InformationCityPresenter {
         return parts.joined(separator: ", ")
     }
 
+    public static func formatCityInteractionItem(
+        _ info: InformationInfo,
+        myPlayerID: Int?,
+        atMax: Bool = false,
+        disabled: Bool = false
+    ) -> String {
+        decorateInteractionItem(
+            format(info, spec: InformationDisplaySpecs.cityInfo, myPlayerID: myPlayerID),
+            atMax: atMax,
+            disabled: disabled
+        )
+    }
+
+    public static func formatOwnedCityInteractionItem(
+        _ info: InformationInfo,
+        atMax: Bool = false,
+        disabled: Bool = false
+    ) -> String {
+        decorateInteractionItem(
+            format(info, spec: InformationDisplaySpecs.ownedCityInfo, myPlayerID: nil),
+            atMax: atMax,
+            disabled: disabled
+        )
+    }
+
+    public static func formatLiquidationInteractionItem(
+        _ info: InformationInfo,
+        sellValue: Int,
+        disabled: Bool = false
+    ) -> String {
+        var base = format(info, spec: InformationDisplaySpecs.ownedCityInfo, myPlayerID: nil)
+        if sellValue > 0 {
+            base += "\(base.isEmpty ? "" : ", ")매각 대금 \(marble(sellValue))"
+        }
+        return decorateInteractionItem(base, atMax: false, disabled: disabled)
+    }
+
+    private static func decorateInteractionItem(
+        _ text: String,
+        atMax: Bool,
+        disabled: Bool
+    ) -> String {
+        var parts = text.isEmpty ? [] : [text]
+        if atMax { parts.append("최대") }
+        if disabled { parts.append("선택 불가") }
+        return parts.joined(separator: ", ")
+    }
+
+    private static func marble(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        formatter.groupingSeparator = ","
+        formatter.groupingSize = 3
+        return "\(formatter.string(from: NSNumber(value: value)) ?? String(value))마블"
+    }
+
     private static func cityEffectLabel(_ effectType: String) -> String? {
         let value = effectType.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
@@ -393,6 +451,210 @@ public enum InformationCityPresenter {
         case "plague": return "전염병"
         default: return value
         }
+    }
+}
+
+public enum InteractionCityItemPresenter {
+    public static func format(
+        information: InformationInfo,
+        missionType: String,
+        role: String? = nil,
+        cost: Int = 0,
+        atMax: Bool = false,
+        disabled: Bool = false,
+        myPlayerID: Int?
+    ) -> String {
+        switch missionType {
+        case "liquidation":
+            return InformationCityPresenter.formatLiquidationInteractionItem(
+                information,
+                sellValue: cost,
+                disabled: disabled
+            )
+        case "olympic":
+            return InformationCityPresenter.formatOwnedCityInteractionItem(
+                information,
+                atMax: atMax,
+                disabled: disabled
+            )
+        default:
+            guard role == nil
+                    || role == "owned_city"
+                    || role == "opponent_city"
+                    || role == "attack_city"
+            else { return "" }
+            return InformationCityPresenter.formatCityInteractionItem(
+                information,
+                myPlayerID: myPlayerID,
+                atMax: atMax,
+                disabled: disabled
+            )
+        }
+    }
+}
+
+public enum InteractionRequestPresenter {
+    public static func description(
+        _ request: InteractionRequestSnapshot,
+        cityInformation: [Int: InformationInfo],
+        myPlayerID: Int?,
+        playerNicknames: [Int: String] = [:]
+    ) -> String {
+        func city(_ cityID: Int?, owned: Bool = false) -> String? {
+            guard let cityID, let info = cityInformation[cityID] else { return nil }
+            let spec = owned ? InformationDisplaySpecs.ownedCityInfo : InformationDisplaySpecs.cityInfo
+            let text = InformationCityPresenter.format(
+                info,
+                spec: spec,
+                myPlayerID: owned ? nil : myPlayerID
+            )
+            return text.isEmpty ? nil : text
+        }
+
+        switch request.missionType {
+        case "purchase_city":
+            guard let info = city(request.cityID) else { return request.description }
+            return "\(info). 구매하시겠습니까? 비용: \(marble(request.cost))"
+
+        case "build_multiple":
+            guard let info = city(request.cityID, owned: true) else { return request.description }
+            return "\(info). 건설할 건물을 선택하세요."
+
+        case "acquire_city":
+            guard let info = city(request.cityID) else { return request.description }
+            return "\(info). 인수하시겠습니까? 인수 비용: \(marble(request.cost))"
+
+        case "liquidation":
+            return request.description
+
+        case "olympic":
+            if request.interactionType == "confirm" { return request.description }
+            return "올림픽을 개최할 도시를 선택하세요."
+
+        case "defense":
+            return defenseDescription(
+                request,
+                cityInformation: cityInformation,
+                myPlayerID: myPlayerID,
+                playerNicknames: playerNicknames
+            ) ?? request.description
+
+        default:
+            return request.description
+        }
+    }
+
+    public static func entryText(
+        _ request: InteractionRequestSnapshot,
+        cityInformation: [Int: InformationInfo],
+        myPlayerID: Int?,
+        playerNicknames: [Int: String] = [:]
+    ) -> String {
+        let description = description(
+            request,
+            cityInformation: cityInformation,
+            myPlayerID: myPlayerID,
+            playerNicknames: playerNicknames
+        )
+        if request.missionType == "liquidation" {
+            let money = liquidationMarbleInfo(request, selectedSellValue: 0)
+            return description.isEmpty ? money : "\(description) \(money.replacingOccurrences(of: "\n", with: " "))"
+        }
+        return description
+    }
+
+    public static func liquidationMarbleInfo(
+        _ request: InteractionRequestSnapshot,
+        selectedSellValue: Int
+    ) -> String {
+        let finalAmount = request.requiredAmount
+        let owned = request.ownedMarble
+        let shortage = max(0, finalAmount - owned)
+        let after = owned + selectedSellValue - finalAmount
+        return [
+            "보유 마블: \(marble(owned))",
+            "필요 금액: \(marble(shortage)) (총 통행료: \(marble(finalAmount)))",
+            "매각 대금: \(marble(selectedSellValue))",
+            "납부 후 잔여: \(marble(after))",
+        ].joined(separator: "\n")
+    }
+
+    public static func liquidationSelectionChanged(
+        _ request: InteractionRequestSnapshot,
+        selectedSellValue: Int
+    ) -> String? {
+        guard selectedSellValue > 0 else { return nil }
+        let after = request.ownedMarble + selectedSellValue - request.requiredAmount
+        let status = after >= 0 ? "납부 가능" : "부족 \(marble(-after))"
+        return "매각 대금 \(marble(selectedSellValue)). \(status)"
+    }
+
+    public static func liquidationShortage(
+        _ request: InteractionRequestSnapshot,
+        selectedSellValue: Int
+    ) -> String? {
+        let after = request.ownedMarble + selectedSellValue - request.requiredAmount
+        guard after < 0 else { return nil }
+        return "금액이 부족합니다. \(marble(-after)) 더 선택하세요."
+    }
+
+    private static func defenseDescription(
+        _ request: InteractionRequestSnapshot,
+        cityInformation: [Int: InformationInfo],
+        myPlayerID: Int?,
+        playerNicknames: [Int: String]
+    ) -> String? {
+        let card = request.defenseCardName ?? ""
+        if request.defenseType == "attack" {
+            let ids = request.cityIDs.isEmpty ? [request.cityID].compactMap { $0 } : request.cityIDs
+            let cities = ids.compactMap { id -> String? in
+                guard let info = cityInformation[id] else { return nil }
+                let text = InformationCityPresenter.format(
+                    info,
+                    spec: InformationDisplaySpecs.cityInfo,
+                    myPlayerID: myPlayerID
+                )
+                return text.isEmpty ? nil : text
+            }
+            let cityText = cities.joined(separator: "; ")
+            let attacker = request.attackerPlayerID.flatMap { playerNicknames[$0] } ?? ""
+            let attackLabel: String
+            switch request.attackType {
+            case "city_change": attackLabel = "도시 체인지"
+            case "forced_sell": attackLabel = "강제 매각"
+            case "yellow_dust": attackLabel = "황사"
+            case "blackout": attackLabel = "도시 정전"
+            case "plague": attackLabel = "전염병"
+            case "alien_invasion": attackLabel = "외계인 침공"
+            case "earthquake": attackLabel = "지진"
+            default: attackLabel = request.attackType ?? "공격"
+            }
+            guard !cityText.isEmpty else { return nil }
+            return "\(attacker)의 \(attackLabel) 공격 대상 도시는 \(cityText)입니다. \(card) 카드로 방어하시겠습니까?"
+        }
+
+        if request.defenseType == "toll" {
+            guard let cityID = request.cityID, let info = cityInformation[cityID] else { return nil }
+            let cityText = InformationCityPresenter.format(
+                info,
+                spec: InformationDisplaySpecs.cityInfo,
+                myPlayerID: myPlayerID
+            )
+            guard !cityText.isEmpty else { return nil }
+            return "\(cityText). 통행료는 \(marble(request.originalAmount))입니다. \(card) 카드로 통행료를 방어하시겠습니까?"
+        }
+
+        return card.isEmpty ? nil : "\(card) 카드를 사용하시겠습니까?"
+    }
+
+    private static func marble(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        formatter.groupingSeparator = ","
+        formatter.groupingSize = 3
+        return "\(formatter.string(from: NSNumber(value: value)) ?? String(value))마블"
     }
 }
 

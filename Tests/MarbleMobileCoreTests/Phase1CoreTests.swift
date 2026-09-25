@@ -889,10 +889,16 @@ extension Phase1CoreTests {
             "action_type": "olympic_city_select", "interaction_type": "select_one", "cancellable": true,
             "payload": [
                 "mission_type": "olympic", "current_marble": 1_000_000,
-                "items": [["id": "1", "city_id": 1, "city_name": "방콕", "disabled": false]],
+                "items": [[
+                    "id": "1", "city_id": 1, "city_name": "방콕",
+                    "at_max": true, "disabled": true, "reason_code": "max_olympic",
+                ]],
             ],
         ])
-        XCTAssertEqual(try InteractionRequestParser.parse(olympic).interactionType, "select_one")
+        let olympicRequest = try InteractionRequestParser.parse(olympic)
+        XCTAssertEqual(olympicRequest.interactionType, "select_one")
+        XCTAssertEqual(olympicRequest.items.first?.atMax, true)
+        XCTAssertEqual(olympicRequest.items.first?.reasonCode, "max_olympic")
 
         let fortune = try roundTripJSON([
             "type": "interaction_request", "interaction_flow_id": "flow-card", "request_id": "req-card",
@@ -1022,6 +1028,68 @@ extension Phase1CoreTests {
         XCTAssertEqual(
             InformationCityPresenter.format(info, myPlayerID: 1),
             "방콕, 빌라, 연두, 독점, 올림픽 2회, 황사, 축제, 성주 소유"
+        )
+    }
+
+    func testInteractionCityPresentationUsesCommonInformationDTO() {
+        let info = InformationInfo(
+            cityID: 7,
+            cityName: "방콕",
+            ownerID: 4,
+            ownerNickname: "AI돌이",
+            groupName: "연두",
+            buildings: ["빌라", "빌딩"],
+            cityEffectTypes: ["plague"],
+            isColorMonopoly: true,
+            isFestival: true,
+            hasOlympic: true,
+            olympicCount: 2
+        )
+
+        XCTAssertEqual(
+            InformationCityPresenter.formatCityInteractionItem(
+                info,
+                myPlayerID: 3
+            ),
+            "방콕, 빌라, 빌딩, 연두, 독점, 올림픽 2회, 전염병, 축제, AI돌이 소유"
+        )
+
+        XCTAssertEqual(
+            InformationCityPresenter.formatOwnedCityInteractionItem(
+                info,
+                atMax: true,
+                disabled: true
+            ),
+            "방콕, 빌라, 빌딩, 연두, 독점, 올림픽 2회, 전염병, 축제, 최대, 선택 불가"
+        )
+
+        XCTAssertEqual(
+            InformationCityPresenter.formatLiquidationInteractionItem(
+                info,
+                sellValue: 450_000
+            ),
+            "방콕, 빌라, 빌딩, 연두, 독점, 올림픽 2회, 전염병, 축제, 매각 대금 450,000마블"
+        )
+
+        XCTAssertEqual(
+            InteractionCityItemPresenter.format(
+                information: info,
+                missionType: "olympic",
+                cost: 0,
+                atMax: true,
+                disabled: true,
+                myPlayerID: 3
+            ),
+            "방콕, 빌라, 빌딩, 연두, 독점, 올림픽 2회, 전염병, 축제, 최대, 선택 불가"
+        )
+        XCTAssertEqual(
+            InteractionCityItemPresenter.format(
+                information: info,
+                missionType: "fortune_selection",
+                role: "opponent_city",
+                myPlayerID: 3
+            ),
+            "방콕, 빌라, 빌딩, 연두, 독점, 올림픽 2회, 전염병, 축제, AI돌이 소유"
         )
     }
 
@@ -1318,7 +1386,7 @@ extension Phase1CoreTests {
         guard case .parallel(let opening) = nodes.first else { return XCTFail("parallel opening expected") }
         XCTAssertTrue(opening.contains(.voice(clip: "select_area.wav", fallbackTTS: nil)))
         XCTAssertTrue(opening.contains(.bgmPlay(clip: "airplane.mp3", loop: true)))
-        XCTAssertTrue(nodes.contains(.tts("목적지를 선택하고 엔터를 누르세요.")))
+        XCTAssertTrue(nodes.contains(.tts("목적지를 선택하고 두 손가락으로 두 번 탭하세요.")))
     }
 
     func testPresentationAlienInvasionBatchIsGroupedOnceLikePC() throws {
@@ -1440,6 +1508,121 @@ extension Phase1CoreTests {
             context: presentationContextForAudioTests()
         )
         XCTAssertNil(plan)
+    }
+
+    func testLiquidationPresentationIncludesCommonCityDTOAndFullPaymentContext() throws {
+        let raw = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-l2", "request_id": "req-l2",
+            "action_type": "liquidation", "interaction_type": "select_multiple", "cancellable": false,
+            "payload": [
+                "mission_type": "liquidation", "required_amount": 500_000, "current_marble": 100_000,
+                "items": [[
+                    "id": "7", "city_id": 7, "city_name": "서울", "group": "빨강",
+                    "buildings": ["빌라", "호텔"], "sell_value": 450_000, "disabled": false,
+                ]],
+            ],
+        ])
+        let request = try InteractionRequestParser.parse(raw)
+        XCTAssertEqual(request.items.first?.information?.cityName, "서울")
+        XCTAssertEqual(request.items.first?.information?.groupName, "빨강")
+
+        let city = InformationInfo(
+            cityID: 7,
+            cityName: "서울",
+            ownerID: 1,
+            ownerNickname: "나",
+            groupName: "빨강",
+            buildings: ["빌라", "호텔"],
+            cityEffectTypes: ["yellow_dust"],
+            isColorMonopoly: true,
+            isFestival: true,
+            hasOlympic: true,
+            olympicCount: 2
+        )
+        let label = InteractionCityItemPresenter.format(
+            information: city,
+            missionType: request.missionType,
+            cost: try XCTUnwrap(request.items.first?.cost),
+            myPlayerID: 1
+        )
+        XCTAssertTrue(label.contains("서울"))
+        XCTAssertTrue(label.contains("독점"))
+        XCTAssertTrue(label.contains("올림픽 2"))
+        XCTAssertTrue(label.contains("황사"))
+        XCTAssertTrue(label.contains("축제"))
+        XCTAssertTrue(label.contains("매각 대금 450,000마블"))
+
+        let initial = InteractionRequestPresenter.liquidationMarbleInfo(request, selectedSellValue: 0)
+        XCTAssertTrue(initial.contains("보유 마블: 100,000마블"))
+        XCTAssertTrue(initial.contains("필요 금액: 400,000마블"))
+        XCTAssertTrue(initial.contains("총 통행료: 500,000마블"))
+        XCTAssertTrue(initial.contains("매각 대금: 0마블"))
+        XCTAssertTrue(initial.contains("납부 후 잔여: -400,000마블"))
+
+        XCTAssertEqual(
+            InteractionRequestPresenter.liquidationSelectionChanged(request, selectedSellValue: 300_000),
+            "매각 대금 300,000마블. 부족 100,000마블"
+        )
+        XCTAssertEqual(
+            InteractionRequestPresenter.liquidationSelectionChanged(request, selectedSellValue: 450_000),
+            "매각 대금 450,000마블. 납부 가능"
+        )
+        XCTAssertEqual(
+            InteractionRequestPresenter.liquidationShortage(request, selectedSellValue: 300_000),
+            "금액이 부족합니다. 100,000마블 더 선택하세요."
+        )
+        XCTAssertNil(InteractionRequestPresenter.liquidationShortage(request, selectedSellValue: 450_000))
+    }
+
+    func testInteractionRequestPresenterUsesCommonCityDTOForSingleCityAndDefenseTargets() throws {
+        let purchaseRaw = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-p2", "request_id": "req-p2",
+            "action_type": "purchase_city", "interaction_type": "confirm", "cancellable": true,
+            "payload": [
+                "mission_type": "purchase_city", "city_id": 3, "city_name": "도쿄", "cost": 200_000,
+            ],
+        ])
+        let purchase = try InteractionRequestParser.parse(purchaseRaw)
+        let city = InformationInfo(
+            cityID: 3,
+            cityName: "도쿄",
+            ownerID: nil,
+            groupName: "파랑",
+            buildings: [],
+            cityEffectTypes: [],
+            isColorMonopoly: false,
+            isFestival: false,
+            hasOlympic: false
+        )
+        let text = InteractionRequestPresenter.description(
+            purchase,
+            cityInformation: [3: city],
+            myPlayerID: 1
+        )
+        XCTAssertTrue(text.contains("도쿄"))
+        XCTAssertTrue(text.contains("파랑"))
+        XCTAssertTrue(text.contains("미소유"))
+        XCTAssertTrue(text.contains("200,000마블"))
+
+        let defenseRaw = try roundTripJSON([
+            "type": "interaction_request", "interaction_flow_id": "flow-d2", "request_id": "req-d2",
+            "action_type": "defense_response", "interaction_type": "confirm", "cancellable": true,
+            "payload": [
+                "mission_type": "defense", "defense_type": "attack", "attack_type": "yellow_dust",
+                "attacker_player_id": 2, "defense_card_name": "방어권", "city_ids": [3], "city_id": 3,
+            ],
+        ])
+        let defense = try InteractionRequestParser.parse(defenseRaw)
+        let defenseText = InteractionRequestPresenter.description(
+            defense,
+            cityInformation: [3: city],
+            myPlayerID: 1,
+            playerNicknames: [2: "AI돌이"]
+        )
+        XCTAssertTrue(defenseText.contains("AI돌이의 황사 공격"))
+        XCTAssertTrue(defenseText.contains("도쿄"))
+        XCTAssertTrue(defenseText.contains("미소유"))
+        XCTAssertTrue(defenseText.contains("방어권 카드로 방어하시겠습니까?"))
     }
 
 }

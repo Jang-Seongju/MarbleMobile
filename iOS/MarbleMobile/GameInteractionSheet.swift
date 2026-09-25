@@ -9,7 +9,6 @@ struct GameInteractionSheet: View {
     @State private var selectedOne: String?
     @State private var selectedMultiple: Set<String> = []
     @State private var selectedByGroup: [String: String] = [:]
-    @State private var selectedDestination: Int?
     @State private var selectedBuildCityID: Int?
     @State private var selectedBuildIDs: Set<String> = []
     @AccessibilityFocusState private var primaryFocus: Bool
@@ -17,9 +16,10 @@ struct GameInteractionSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if !request.description.isEmpty {
+                let description = model.interactionDescription(request)
+                if !description.isEmpty {
                     Section {
-                        Text(request.description)
+                        Text(description)
                             .accessibilityFocused($primaryFocus)
                     }
                 }
@@ -94,7 +94,7 @@ struct GameInteractionSheet: View {
                         selectedOne = item.id
                     } label: {
                         HStack {
-                            Text(model.interactionItemLabel(item))
+                            Text(model.interactionItemLabel(item, request: request))
                             Spacer()
                             if selectedOne == item.id { Image(systemName: "checkmark") }
                         }
@@ -119,14 +119,14 @@ struct GameInteractionSheet: View {
         case "select_multiple":
             Section("선택 항목") {
                 ForEach(request.items) { item in
-                    Toggle(model.interactionItemLabel(item), isOn: Binding(
+                    Toggle(model.interactionItemLabel(item, request: request), isOn: Binding(
                         get: { selectedMultiple.contains(item.id) },
                         set: { newValue in updateMultiple(item, selected: newValue) }
                     ))
                     .disabled(item.disabled || (!selectedMultiple.contains(item.id) && !canAdd(item)) || model.interactionResponseSubmitted)
                 }
                 if request.missionType == "liquidation" {
-                    Text(liquidationSummary)
+                    Text(model.liquidationMarbleInfo(request, selectedSellValue: selectedMultipleCost))
                         .font(.footnote)
                 } else if request.ownedMarble > 0 {
                     Text("선택 비용: \(marble(selectedMultipleCost)) / 보유 \(marble(request.ownedMarble))")
@@ -146,7 +146,7 @@ struct GameInteractionSheet: View {
                             selectedByGroup[group.role] = item.id
                         } label: {
                             HStack {
-                                Text(model.interactionItemLabel(item))
+                                Text(model.interactionItemLabel(item, request: request, role: group.role))
                                 Spacer()
                                 if selectedByGroup[group.role] == item.id { Image(systemName: "checkmark") }
                             }
@@ -160,35 +160,6 @@ struct GameInteractionSheet: View {
                 Button("확인") { submitGroups() }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.interactionResponseSubmitted)
-            }
-
-        case "select_destination":
-            Section("목적지") {
-                ForEach(destinationIndices, id: \.self) { index in
-                    Button {
-                        selectedDestination = index
-                    } label: {
-                        HStack {
-                            Text(model.destinationLabel(index))
-                            Spacer()
-                            if selectedDestination == index { Image(systemName: "checkmark") }
-                        }
-                    }
-                    .disabled(model.interactionResponseSubmitted)
-                    .accessibilityValue(selectedDestination == index ? "선택됨" : "")
-                }
-                Button("확인") {
-                    guard let target = selectedDestination else {
-                        model.announce("목적지를 선택해 주세요.")
-                        return
-                    }
-                    model.respondToInteraction(
-                        responseType: "selected",
-                        payload: ["target_index": target]
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.interactionResponseSubmitted)
             }
 
         case "select_city_and_buildings":
@@ -209,7 +180,7 @@ struct GameInteractionSheet: View {
 
                     if selectedBuildCityID == city.cityID {
                         ForEach(city.buildOptions) { item in
-                            Toggle(model.interactionItemLabel(item), isOn: Binding(
+                            Toggle(model.interactionItemLabel(item, request: request), isOn: Binding(
                                 get: { selectedBuildIDs.contains(item.id) },
                                 set: { selected in updateStartBuild(item, selected: selected) }
                             ))
@@ -253,13 +224,12 @@ struct GameInteractionSheet: View {
         } else {
             selectedMultiple.remove(item.id)
         }
-    }
-
-    private var liquidationSummary: String {
-        let available = request.ownedMarble + selectedMultipleCost
-        let shortage = max(0, request.requiredAmount - available)
-        if shortage > 0 { return "부족 금액: \(marble(shortage))" }
-        return "필요 금액을 충족했습니다."
+        if request.missionType == "liquidation" {
+            model.announceLiquidationSelectionChanged(
+                request,
+                selectedSellValue: selectedMultipleCost
+            )
+        }
     }
 
     private func submitMultiple() {
@@ -268,8 +238,11 @@ struct GameInteractionSheet: View {
             return
         }
         if request.missionType == "liquidation",
-           request.ownedMarble + selectedMultipleCost < request.requiredAmount {
-            model.announce("금액이 부족합니다. \(marble(request.requiredAmount - request.ownedMarble - selectedMultipleCost)) 더 선택하세요.")
+           let shortage = InteractionRequestPresenter.liquidationShortage(
+               request,
+               selectedSellValue: selectedMultipleCost
+           ) {
+            model.announce(shortage)
             return
         }
         let ids = request.items.map(\.id).filter { selectedMultiple.contains($0) }
@@ -329,11 +302,6 @@ struct GameInteractionSheet: View {
             responseType: "selected",
             payload: ["selected_city_id": cityID, "selected_ids": ids]
         )
-    }
-
-    private var destinationIndices: [Int] {
-        if !request.allowedDestinationIndices.isEmpty { return request.allowedDestinationIndices }
-        return Array(1...32).filter { !request.excludedIndices.contains($0) }
     }
 
     private func groupTitle(_ role: String) -> String {

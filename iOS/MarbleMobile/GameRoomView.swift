@@ -28,7 +28,11 @@ struct GameRoomView: View {
                     onExitDirectTouch: model.enterStandardVoiceOverBoardMode,
                     onEnterDirectTouch: model.enterDirectTouchBoardMode,
                     onMagicTap: model.performBoardMagicTap,
-                    onEscape: { showLeaveConfirmation = true },
+                    onEscape: {
+                        if !model.performBoardEscape() {
+                            showLeaveConfirmation = true
+                        }
+                    },
                     onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
                     onRotorForward: model.rotateGameRotorForward,
                     onRotorBackward: model.rotateGameRotorBackward,
@@ -86,12 +90,23 @@ struct GameRoomView: View {
                 AIPlayerSelectionSheet(request: request)
                     .environmentObject(model)
             }
-            .sheet(item: $model.activeInteraction) { request in
+            .sheet(item: interactionSheetBinding) { request in
                 GameInteractionSheet(request: request)
                     .id(request.requestID)
                     .environmentObject(model)
             }
         }
+    }
+
+    private var interactionSheetBinding: Binding<InteractionRequestSnapshot?> {
+        Binding(
+            get: {
+                model.isWorldTravelDestinationSelectionActive
+                    ? nil
+                    : model.activeInteraction
+            },
+            set: { _ in }
+        )
     }
 
     private var roomTitle: String {

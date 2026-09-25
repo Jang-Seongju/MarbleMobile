@@ -324,8 +324,11 @@ public struct InteractionItemSnapshot: Identifiable, Equatable, Sendable {
     public let id: String
     public let label: String
     public let cityID: Int?
+    public let information: InformationInfo?
     public let cost: Int
     public let disabled: Bool
+    public let atMax: Bool
+    public let reasonCode: String?
     public let action: String?
 }
 
@@ -357,6 +360,16 @@ public struct InteractionRequestSnapshot: Identifiable, Equatable, Sendable {
     public let startBuildCities: [StartBuildCitySnapshot]
     public let excludedIndices: Set<Int>
     public let allowedDestinationIndices: [Int]
+    public let cityID: Int?
+    public let cityIDs: [Int]
+    public let cost: Int
+    public let ownerID: Int?
+    public let ownerNickname: String?
+    public let defenseType: String?
+    public let attackType: String?
+    public let attackerPlayerID: Int?
+    public let defenseCardName: String?
+    public let originalAmount: Int
     public let ownedMarble: Int
     public let requiredAmount: Int
     public let cardName: String?
@@ -392,8 +405,20 @@ public enum InteractionRequestParser {
         let cities = try parseStartBuildCities(payload["cities"])
         let excluded = try parseExcluded(payload["excluded_indices"])
         let allowedDestinations = try parseAllowedDestinations(payload["allowed_destinations"])
-        let owned = WireScalarParser.exactInt(payload[mission == "liquidation" ? "current_marble" : "owned_marble"]) ?? 0
+        let owned = WireScalarParser.exactInt(payload["owned_marble"])
+            ?? WireScalarParser.exactInt(payload["current_marble"])
+            ?? 0
         let required = WireScalarParser.exactInt(payload["required_amount"]) ?? 0
+        let cityID = WireScalarParser.exactInt(payload["city_id"])
+        let cityIDs = parseOptionalIntArray(payload["city_ids"])
+        let cost = WireScalarParser.exactInt(payload["cost"]) ?? 0
+        let ownerID = WireScalarParser.exactInt(payload["owner_id"])
+        let ownerNickname = optionalString(payload["owner_nickname"])
+        let defenseType = optionalString(payload["defense_type"])
+        let attackType = optionalString(payload["attack_type"])
+        let attackerPlayerID = WireScalarParser.exactInt(payload["attacker_player_id"])
+        let defenseCardName = optionalString(payload["defense_card_name"])
+        let originalAmount = WireScalarParser.exactInt(payload["original_amount"]) ?? 0
         let cardName = optionalString(payload["card_name"])
         let cardDescription = optionalString(payload["card_description"])
 
@@ -411,6 +436,16 @@ public enum InteractionRequestParser {
             startBuildCities: cities,
             excludedIndices: excluded,
             allowedDestinationIndices: allowedDestinations,
+            cityID: cityID,
+            cityIDs: cityIDs,
+            cost: cost,
+            ownerID: ownerID,
+            ownerNickname: ownerNickname,
+            defenseType: defenseType,
+            attackType: attackType,
+            attackerPlayerID: attackerPlayerID,
+            defenseCardName: defenseCardName,
+            originalAmount: originalAmount,
             ownedMarble: owned,
             requiredAmount: required,
             cardName: cardName,
@@ -430,8 +465,25 @@ public enum InteractionRequestParser {
                 ?? WireScalarParser.exactInt(item["build_cost"])
                 ?? WireScalarParser.exactInt(item["cost"])
                 ?? 0
+            let atMax = WireScalarParser.exactBool(item["at_max"]) ?? false
+            let reasonCode = optionalString(item["reason_code"])
             let action = optionalString(item["action"])
-            return .init(id: itemID, label: itemLabel(item), cityID: cityID, cost: cost, disabled: disabled, action: action)
+            var informationData = item
+            if informationData["group_name"] == nil, let group = informationData["group"] {
+                informationData["group_name"] = group
+            }
+            let information = cityID == nil ? nil : InformationParser.info(informationData)
+            return .init(
+                id: itemID,
+                label: itemLabel(item),
+                cityID: cityID,
+                information: information,
+                cost: cost,
+                disabled: disabled,
+                atMax: atMax,
+                reasonCode: reasonCode,
+                action: action
+            )
         }
     }
 
@@ -473,6 +525,11 @@ public enum InteractionRequestParser {
         }
     }
 
+
+    private static func parseOptionalIntArray(_ value: Any?) -> [Int] {
+        guard let raw = value as? [Any] else { return [] }
+        return raw.compactMap(WireScalarParser.exactInt)
+    }
 
     private static func parseAllowedDestinations(_ value: Any?) throws -> [Int] {
         guard let value else { return [] }
