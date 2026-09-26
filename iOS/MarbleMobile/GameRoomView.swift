@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import MarbleMobileCore
 
 struct GameRoomView: View {
@@ -202,18 +201,6 @@ struct GameRoomView: View {
                     Text("방 번호: \(room.roomID)")
                     Text("최대 인원: \(room.maxPlayers)명")
                     Text(room.isPrivate ? "비공개 방" : "공개 방")
-                }
-
-                Divider()
-
-                Button("스크롤 진단 초기화") {
-                    GameMessageScrollDiagnostics.reset()
-                    UIAccessibility.post(notification: .announcement, argument: "스크롤 진단을 초기화했습니다.")
-                }
-
-                Button("스크롤 진단 로그 복사") {
-                    UIPasteboard.general.string = GameMessageScrollDiagnostics.snapshot()
-                    UIAccessibility.post(notification: .announcement, argument: "스크롤 진단 로그를 복사했습니다.")
                 }
             }
 
