@@ -5,6 +5,7 @@ struct GameRoomView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showLeaveConfirmation = false
     @AccessibilityFocusState private var teamNameAccessibilityFocus: Bool
+    @AccessibilityFocusState private var directTouchExitAccessibilityFocus: Bool
     @State private var boardAccessibilityFocusRequest = 0
 
     var body: some View {
@@ -25,8 +26,8 @@ struct GameRoomView: View {
                     currentCellDescription: model.currentBoardAccessibilityDescription,
                     directTouchAvailable: model.isBoardDirectTouchAreaAvailable,
                     accessibilityFocusRequest: boardAccessibilityFocusRequest,
-                    directTouchHint: "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 게임 메시지로 이동합니다.",
-                    onExitDirectTouchOverride: nil,
+                    directTouchHint: "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환합니다.",
+                    onExitDirectTouchOverride: focusPrimaryActionAfterDirectTouch,
                     onMoveLeft: model.moveBoardLeft,
                     onMoveRight: model.moveBoardRight,
                     onMoveUp: model.moveBoardUp,
@@ -152,6 +153,11 @@ struct GameRoomView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private func focusPrimaryActionAfterDirectTouch() {
+        directTouchExitAccessibilityFocus = false
+        DispatchQueue.main.async { directTouchExitAccessibilityFocus = true }
+    }
+
     private var gameActionControls: some View {
         HStack(spacing: 8) {
             primaryAction
@@ -204,13 +210,16 @@ struct GameRoomView: View {
                 model.createTeamFromDraft()
             }
             .disabled(model.isTeamCreationPending)
+            .accessibilityFocused($directTouchExitAccessibilityFocus)
         } else if model.gameIsActive {
             Button("주사위 던지기") { model.performRollDice() }
+                .accessibilityFocused($directTouchExitAccessibilityFocus)
         } else {
             Button(model.isGameStartPending ? "게임 시작 중" : "게임 시작") {
                 model.requestGameStart()
             }
             .disabled(model.isGameStartPending)
+            .accessibilityFocused($directTouchExitAccessibilityFocus)
         }
     }
 
@@ -242,8 +251,6 @@ struct GameRoomView: View {
 }
 
 struct GameBoardShell: View {
-    @State private var focusLatestMessageRequest = 0
-
     let messages: [String]
     let catalog: BoardCatalogSnapshot?
     let cursorIndex: Int
@@ -303,11 +310,7 @@ struct GameBoardShell: View {
                         onMoveUp: onMoveUp,
                         onMoveDown: onMoveDown,
                         onExitDirectTouch: {
-                            if let onExitDirectTouchOverride {
-                                onExitDirectTouchOverride()
-                            } else {
-                                focusLatestMessageRequest &+= 1
-                            }
+                            onExitDirectTouchOverride?()
                         },
                         onMagicTap: onMagicTap,
                         onEscape: onEscape,
@@ -354,10 +357,7 @@ struct GameBoardShell: View {
     }
 
     private var messageArea: some View {
-        GameMessageLogView(
-            messages: messages,
-            focusLatestRequest: focusLatestMessageRequest
-        )
+        GameMessageLogView(messages: messages)
         .background(.thinMaterial)
     }
 }

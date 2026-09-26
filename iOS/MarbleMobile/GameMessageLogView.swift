@@ -3,55 +3,59 @@ import UIKit
 
 /// Read-only live game log.
 ///
-/// The log deliberately owns no document-style reading-position model. New messages
-/// append at the tail and the visual viewport follows the tail. VoiceOver can still
-/// traverse each message independently. A label-less adjustable accessibility element
-/// provides one-screen backward/forward paging without adding visible controls.
+/// The log never moves or pins VoiceOver focus. Visual scrolling and VoiceOver focus
+/// are deliberately independent: new messages may follow the tail only while the user
+/// is already at the tail, and manual paging never posts a focus-changing accessibility
+/// notification.
 struct GameMessageLogView: UIViewRepresentable {
     let messages: [String]
-    let focusLatestRequest: Int
 
     func makeUIView(context: Context) -> GameMessageLogUIView {
         let view = GameMessageLogUIView()
-        view.update(messages: messages, focusLatestRequest: focusLatestRequest)
+        view.update(messages: messages)
         return view
     }
 
     func updateUIView(_ uiView: GameMessageLogUIView, context: Context) {
-        uiView.update(messages: messages, focusLatestRequest: focusLatestRequest)
+        uiView.update(messages: messages)
     }
 }
 
-private final class MessageLogPagingElement: UIAccessibilityElement {
+private final class MessageLogPagingControl: UIView {
     weak var logView: GameMessageLogUIView?
 
     override func accessibilityIncrement() {
-        // VoiceOver one-finger swipe up: one screen toward older messages.
+        // VoiceOver one-finger swipe up: one viewport toward older messages.
         logView?.pageTowardOlderMessages()
     }
 
     override func accessibilityDecrement() {
-        // VoiceOver one-finger swipe down: one screen toward newer messages.
+        // VoiceOver one-finger swipe down: one viewport toward newer messages.
         logView?.pageTowardNewerMessages()
+    }
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        logView?.performAccessibilityScroll(direction) ?? false
     }
 }
 
-final class GameMessageLogUIView: UIView {
+private final class MessageLogLabel: UILabel {
+    weak var logView: GameMessageLogUIView?
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        // Forward VoiceOver's three-finger page gesture to the real scroll view without
+        // moving accessibility focus away from the message currently being read.
+        logView?.performAccessibilityScroll(direction) ?? super.accessibilityScroll(direction)
+    }
+}
+
+final class GameMessageLogUIView: UIView, UIScrollViewDelegate {
     private let scrollView = UIScrollView()
     private let stackView = UIStackView()
-    private var messageLabels: [UILabel] = []
+    private let pagingControl = MessageLogPagingControl()
+    private var messageLabels: [MessageLogLabel] = []
     private var renderedMessages: [String] = []
-    private var lastFocusLatestRequest = 0
-    private lazy var pagingElement: MessageLogPagingElement = {
-        let element = MessageLogPagingElement(accessibilityContainer: self)
-        element.logView = self
-        element.isAccessibilityElement = true
-        element.accessibilityTraits = [.adjustable]
-        // No invented label. The value is only the real scroll geometry, for example
-        // “14페이지 중 14페이지”, so VoiceOver can announce position while the same
-        // adjustable element keeps focus across increment/decrement.
-        return element
-    }()
+    private var shouldFollowTail = true
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -65,49 +69,67 @@ final class GameMessageLogUIView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        pagingElement.accessibilityFrameInContainerSpace = bounds
         updatePagingAccessibilityValue()
     }
 
-    func update(messages: [String], focusLatestRequest: Int) {
+    func update(messages: [String]) {
+        guard messages != renderedMessages else {
+            updatePagingAccessibilityValue()
+            return
+        }
+
         let wasEmpty = renderedMessages.isEmpty
         let isPureAppend = !renderedMessages.isEmpty
             && messages.count >= renderedMessages.count
             && Array(messages.prefix(renderedMessages.count)) == renderedMessages
+        let followTailAfterUpdate = isPureAppend ? (shouldFollowTail || isAtTail) : true
 
-        if messages != renderedMessages {
-            if isPureAppend {
-                for message in messages.dropFirst(renderedMessages.count) {
-                    appendMessageLabel(message)
-                }
-            } else {
-                rebuildMessageLabels(messages)
+        if isPureAppend {
+            for message in messages.dropFirst(renderedMessages.count) {
+                appendMessageLabel(message)
             }
-            renderedMessages = messages
-            refreshAccessibilityElements()
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.layoutIfNeeded()
-                self.scrollToLatest(animated: !wasEmpty)
-                self.updatePagingAccessibilityValue()
-            }
+        } else {
+            rebuildMessageLabels(messages)
         }
+        renderedMessages = messages
 
-        if focusLatestRequest != lastFocusLatestRequest {
-            lastFocusLatestRequest = focusLatestRequest
-            DispatchQueue.main.async { [weak self] in
-                self?.focusLatestMessage()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.layoutIfNeeded()
+
+            if followTailAfterUpdate {
+                // Tail-follow is visual scrolling only. It never chooses a VoiceOver
+                // element and never posts layoutChanged/screenChanged.
+                self.scrollToLatest(animated: !wasEmpty)
+                self.shouldFollowTail = true
+            } else {
+                // The user is reading older output. Appending new messages must not
+                // pull the viewport or VoiceOver focus back to the tail.
+                self.updatePagingAccessibilityValue()
             }
         }
     }
 
     fileprivate func pageTowardOlderMessages() {
-        page(by: -visiblePageHeight)
+        _ = page(by: -visiblePageHeight)
     }
 
     fileprivate func pageTowardNewerMessages() {
-        page(by: visiblePageHeight)
+        _ = page(by: visiblePageHeight)
+    }
+
+    fileprivate func performAccessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        // UIAccessibilityScrollDirection describes the three-finger swipe direction:
+        // swipe up moves the viewport toward newer/bottom content; swipe down moves it
+        // toward older/top content. No focus-changing notification is posted.
+        switch direction {
+        case .up:
+            return page(by: visiblePageHeight)
+        case .down:
+            return page(by: -visiblePageHeight)
+        default:
+            return false
+        }
     }
 
     private func configure() {
@@ -117,7 +139,7 @@ final class GameMessageLogUIView: UIView {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.alwaysBounceVertical = true
         scrollView.showsVerticalScrollIndicator = true
-        scrollView.isAccessibilityElement = false
+        scrollView.delegate = self
         addSubview(scrollView)
 
         stackView.translatesAutoresizingMaskIntoConstraints = false
@@ -126,6 +148,16 @@ final class GameMessageLogUIView: UIView {
         stackView.distribution = .fill
         stackView.spacing = 6
         scrollView.addSubview(stackView)
+
+        // This is a real UIKit accessibility view rather than a synthetic container
+        // element. It consumes no visible layout space and does not replace the normal
+        // UIScrollView accessibility hierarchy used by the message labels.
+        pagingControl.translatesAutoresizingMaskIntoConstraints = false
+        pagingControl.backgroundColor = .clear
+        pagingControl.isAccessibilityElement = true
+        pagingControl.accessibilityTraits = [.adjustable]
+        pagingControl.logView = self
+        addSubview(pagingControl)
 
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -138,10 +170,16 @@ final class GameMessageLogUIView: UIView {
             stackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 8),
             stackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -8),
             stackView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -16),
+
+            // Accessibility-only adjustable control: no visible button or reserved row.
+            pagingControl.trailingAnchor.constraint(equalTo: trailingAnchor),
+            pagingControl.bottomAnchor.constraint(equalTo: bottomAnchor),
+            pagingControl.widthAnchor.constraint(equalToConstant: 1),
+            pagingControl.heightAnchor.constraint(equalToConstant: 1),
         ])
 
         rebuildMessageLabels([])
-        refreshAccessibilityElements()
+        updatePagingAccessibilityValue()
     }
 
     private func rebuildMessageLabels(_ messages: [String]) {
@@ -157,8 +195,11 @@ final class GameMessageLogUIView: UIView {
             stackView.addArrangedSubview(placeholder)
             return
         }
+
         for message in messages {
-            appendMessageLabel(message)
+            let label = makeLabel(message, secondary: false)
+            messageLabels.append(label)
+            stackView.addArrangedSubview(label)
         }
     }
 
@@ -170,13 +211,15 @@ final class GameMessageLogUIView: UIView {
             stackView.removeArrangedSubview(placeholder)
             placeholder.removeFromSuperview()
         }
+
         let label = makeLabel(message, secondary: false)
         messageLabels.append(label)
         stackView.addArrangedSubview(label)
     }
 
-    private func makeLabel(_ text: String, secondary: Bool) -> UILabel {
-        let label = UILabel()
+    private func makeLabel(_ text: String, secondary: Bool) -> MessageLogLabel {
+        let label = MessageLogLabel()
+        label.logView = self
         label.numberOfLines = 0
         label.lineBreakMode = .byWordWrapping
         label.font = UIFont.preferredFont(forTextStyle: .body)
@@ -186,12 +229,6 @@ final class GameMessageLogUIView: UIView {
         label.isAccessibilityElement = true
         label.accessibilityTraits = [.staticText]
         return label
-    }
-
-    private func refreshAccessibilityElements() {
-        // Messages remain ordinary VoiceOver text elements. The paging element is a
-        // separate accessibility-only control occupying no visual layout space.
-        accessibilityElements = messageLabels.map { $0 as Any } + [pagingElement]
     }
 
     private var minimumOffsetY: CGFloat {
@@ -209,6 +246,10 @@ final class GameMessageLogUIView: UIView {
         max(1, scrollView.bounds.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom)
     }
 
+    private var isAtTail: Bool {
+        maximumOffsetY - scrollView.contentOffset.y <= 1
+    }
+
     private func scrollToLatest(animated: Bool) {
         layoutIfNeeded()
         scrollView.setContentOffset(
@@ -218,23 +259,23 @@ final class GameMessageLogUIView: UIView {
         updatePagingAccessibilityValue()
     }
 
-    private func page(by delta: CGFloat) {
+    @discardableResult
+    private func page(by delta: CGFloat) -> Bool {
         layoutIfNeeded()
         let current = scrollView.contentOffset.y
         let target = min(maximumOffsetY, max(minimumOffsetY, current + delta))
         guard abs(target - current) > 0.5 else {
             updatePagingAccessibilityValue()
-            return
+            return false
         }
 
-        // Keep the adjustable element itself focused. Posting pageScrolled here makes
-        // VoiceOver search for newly visible elements and was the source of the focus
-        // jump. Adjustable controls automatically re-announce their changed value.
         scrollView.setContentOffset(
             CGPoint(x: scrollView.contentOffset.x, y: target),
             animated: false
         )
+        shouldFollowTail = target >= maximumOffsetY - 1
         updatePagingAccessibilityValue()
+        return true
     }
 
     private func updatePagingAccessibilityValue() {
@@ -254,13 +295,12 @@ final class GameMessageLogUIView: UIView {
                 max(1, Int(floor((offset - minimumOffsetY) / pageHeight)) + 1)
             )
         }
-        pagingElement.accessibilityValue = "\(currentPage)페이지 중 \(totalPages)페이지"
+
+        pagingControl.accessibilityValue = "\(currentPage)페이지 중 \(totalPages)페이지"
     }
 
-    private func focusLatestMessage() {
-        layoutIfNeeded()
-        scrollToLatest(animated: false)
-        guard let latest = messageLabels.last else { return }
-        UIAccessibility.post(notification: .layoutChanged, argument: latest)
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        shouldFollowTail = isAtTail
+        updatePagingAccessibilityValue()
     }
 }
