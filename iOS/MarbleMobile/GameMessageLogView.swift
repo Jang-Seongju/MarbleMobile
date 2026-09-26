@@ -158,6 +158,8 @@ struct GameMessageLogView: UIViewRepresentable {
     final class Coordinator {
         private var contentOffsetObservation: NSKeyValueObservation?
         private var contentSizeObservation: NSKeyValueObservation?
+        private(set) var renderedMessages: [String] = []
+        private(set) var hasRenderedInitialState = false
 
         func install(on view: UITextView) {
             contentOffsetObservation = view.observe(\.contentOffset, options: [.old, .new]) { _, change in
@@ -177,6 +179,11 @@ struct GameMessageLogView: UIViewRepresentable {
                 )
             }
         }
+
+        func markRendered(messages: [String]) {
+            renderedMessages = messages
+            hasRenderedInitialState = true
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -194,27 +201,106 @@ struct GameMessageLogView: UIViewRepresentable {
         view.textContainer.lineFragmentPadding = 0
         context.coordinator.install(on: view)
         GameMessageScrollDiagnostics.record("MAKE_UIVIEW \(GameMessageScrollDiagnostics.describe(view))")
-        apply(messages: messages, to: view)
+        apply(messages: messages, to: view, coordinator: context.coordinator)
         return view
     }
 
     func updateUIView(_ uiView: UITextView, context: Context) {
-        apply(messages: messages, to: uiView)
+        apply(messages: messages, to: uiView, coordinator: context.coordinator)
     }
 
-    private func apply(messages: [String], to view: UITextView) {
+    private func apply(messages: [String], to view: UITextView, coordinator: Coordinator) {
+        view.textColor = messages.isEmpty ? .secondaryLabel : .label
+
+        guard coordinator.hasRenderedInitialState else {
+            replaceAll(messages: messages, in: view, coordinator: coordinator, reason: "initial")
+            return
+        }
+
+        let previous = coordinator.renderedMessages
+        guard previous != messages else { return }
+
+        if !previous.isEmpty,
+           messages.count > previous.count,
+           Array(messages.prefix(previous.count)) == previous {
+            append(
+                newMessages: Array(messages.dropFirst(previous.count)),
+                allMessages: messages,
+                to: view,
+                coordinator: coordinator
+            )
+            return
+        }
+
+        // A transition to/from the empty placeholder, room reset, truncation, or
+        // replacement of an existing message is not an append. Only those real
+        // replacement cases rebuild the text storage.
+        replaceAll(messages: messages, in: view, coordinator: coordinator, reason: "reset-or-replacement")
+    }
+
+    private func append(
+        newMessages: [String],
+        allMessages: [String],
+        to view: UITextView,
+        coordinator: Coordinator
+    ) {
+        guard !newMessages.isEmpty else { return }
+
+        let suffix = "\n" + newMessages.joined(separator: "\n")
+        let insertionLocation = view.textStorage.length
+        let insertedLength = (suffix as NSString).length
+
+        GameMessageScrollDiagnostics.record(
+            "TEXT_APPEND BEGIN addedMessages=\(newMessages.count) oldCount=\(coordinator.renderedMessages.count) newCount=\(allMessages.count) \(GameMessageScrollDiagnostics.describe(view))"
+        )
+
+        view.textStorage.beginEditing()
+        view.textStorage.replaceCharacters(
+            in: NSRange(location: insertionLocation, length: 0),
+            with: suffix
+        )
+        if insertedLength > 0 {
+            var attributes: [NSAttributedString.Key: Any] = [
+                .foregroundColor: UIColor.label
+            ]
+            if let font = view.font {
+                attributes[.font] = font
+            }
+            view.textStorage.addAttributes(
+                attributes,
+                range: NSRange(location: insertionLocation, length: insertedLength)
+            )
+        }
+        view.textStorage.endEditing()
+        coordinator.markRendered(messages: allMessages)
+
+        GameMessageScrollDiagnostics.record(
+            "TEXT_APPEND END \(GameMessageScrollDiagnostics.describe(view))"
+        )
+    }
+
+    private func replaceAll(
+        messages: [String],
+        in view: UITextView,
+        coordinator: Coordinator,
+        reason: String
+    ) {
         let displayedText = messages.isEmpty
             ? "게임 메시지가 없습니다."
             : messages.joined(separator: "\n")
 
-        view.textColor = messages.isEmpty ? .secondaryLabel : .label
-        guard view.text != displayedText else { return }
+        guard view.text != displayedText || coordinator.renderedMessages != messages else {
+            coordinator.markRendered(messages: messages)
+            return
+        }
+
         GameMessageScrollDiagnostics.record(
-            "TEXT_ASSIGN BEGIN oldLength=\(view.text.utf16.count) newLength=\(displayedText.utf16.count) messageCount=\(messages.count) \(GameMessageScrollDiagnostics.describe(view))"
+            "TEXT_REPLACE_ALL BEGIN reason=\(reason) oldLength=\(view.text.utf16.count) newLength=\(displayedText.utf16.count) messageCount=\(messages.count) \(GameMessageScrollDiagnostics.describe(view))"
         )
         view.text = displayedText
+        coordinator.markRendered(messages: messages)
         GameMessageScrollDiagnostics.record(
-            "TEXT_ASSIGN END \(GameMessageScrollDiagnostics.describe(view))"
+            "TEXT_REPLACE_ALL END reason=\(reason) \(GameMessageScrollDiagnostics.describe(view))"
         )
     }
 }
