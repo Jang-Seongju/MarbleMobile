@@ -18,9 +18,7 @@ final class InteractionDraftState: ObservableObject {
             : nil
         selectedMultiple.removeAll()
         selectedByGroup.removeAll()
-        selectedBuildCityID = request.interactionType == "select_city_and_buildings"
-            ? request.startBuildCities.first?.cityID
-            : nil
+        selectedBuildCityID = nil
         selectedBuildIDs.removeAll()
     }
 
@@ -163,7 +161,7 @@ struct GameInteractionSheet: View {
                     )
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.interactionResponseSubmitted)
+                .disabled(model.interactionResponseSubmitted || draft.selectedOne == nil)
             }
 
         case "select_multiple":
@@ -184,7 +182,7 @@ struct GameInteractionSheet: View {
                 }
                 Button("확인") { submitMultiple() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.interactionResponseSubmitted)
+                    .disabled(model.interactionResponseSubmitted || !canSubmitMultiple)
             }
 
         case "select_one_per_group":
@@ -209,18 +207,18 @@ struct GameInteractionSheet: View {
             Section {
                 Button("확인") { submitGroups() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.interactionResponseSubmitted)
+                    .disabled(model.interactionResponseSubmitted || !canSubmitGroups)
             }
 
         case "select_city_and_buildings":
             ForEach(request.startBuildCities) { city in
-                Section(city.label) {
+                Section {
                     Button {
                         draft.selectedBuildCityID = city.cityID
                         draft.selectedBuildIDs = []
                     } label: {
                         HStack {
-                            Text("이 도시 선택")
+                            Text(city.label)
                             Spacer()
                             if draft.selectedBuildCityID == city.cityID { Image(systemName: "checkmark") }
                         }
@@ -246,7 +244,7 @@ struct GameInteractionSheet: View {
             Section {
                 Button("확인") { submitStartBuild() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.interactionResponseSubmitted)
+                    .disabled(model.interactionResponseSubmitted || !canSubmitStartBuild)
             }
 
         default:
@@ -256,6 +254,19 @@ struct GameInteractionSheet: View {
 
     private var selectedMultipleCost: Int {
         request.items.filter { draft.selectedMultiple.contains($0.id) }.reduce(0) { $0 + max(0, $1.cost) }
+    }
+
+    private var canSubmitMultiple: Bool {
+        guard !draft.selectedMultiple.isEmpty else { return false }
+        guard request.missionType == "liquidation" else { return true }
+        return InteractionRequestPresenter.liquidationShortage(
+            request,
+            selectedSellValue: selectedMultipleCost
+        ) == nil
+    }
+
+    private var canSubmitGroups: Bool {
+        request.groups.allSatisfy { draft.selectedByGroup[$0.role] != nil }
     }
 
     private func canAdd(_ item: InteractionItemSnapshot) -> Bool {
@@ -317,6 +328,13 @@ struct GameInteractionSheet: View {
         return city.buildOptions
             .filter { draft.selectedBuildIDs.contains($0.id) }
             .reduce(0) { $0 + max(0, $1.cost) }
+    }
+
+    private var canSubmitStartBuild: Bool {
+        guard let cityID = draft.selectedBuildCityID,
+              request.startBuildCities.contains(where: { $0.cityID == cityID })
+        else { return false }
+        return !draft.selectedBuildIDs.isEmpty
     }
 
     private func canAddStartBuild(_ item: InteractionItemSnapshot) -> Bool {

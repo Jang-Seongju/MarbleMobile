@@ -346,7 +346,7 @@ final class AppModel: ObservableObject {
     }
 
     var islandContextAction: IslandContextAction? {
-        guard gameIsActive, !gameFinished, activeInteraction == nil, pendingInteractionActivation == nil, aiSelectionRequest == nil,
+        guard entryPhase == .active, gameIsActive, !gameFinished, activeInteraction == nil, pendingInteractionActivation == nil, aiSelectionRequest == nil,
               let player = localGamePlayer, !player.isBankrupt, player.isStranded else { return nil }
         if heldCardID == "island_escape" { return .escapeCard }
         return player.marble >= 200_000 ? .bail : nil
@@ -361,9 +361,23 @@ final class AppModel: ObservableObject {
     }
 
     var salaryBoosterContextAvailable: Bool {
-        guard gameIsActive, !gameFinished, activeInteraction == nil, pendingInteractionActivation == nil, aiSelectionRequest == nil,
+        guard entryPhase == .active, gameIsActive, !gameFinished, activeInteraction == nil, pendingInteractionActivation == nil, aiSelectionRequest == nil,
               let player = localGamePlayer, !player.isBankrupt else { return false }
         return heldCardID == "salary_booster"
+    }
+
+    var canCreateTeam: Bool {
+        entryPhase == .active
+            && roomEntry != nil
+            && !hasJoinedTeam
+            && !isTeamCreationPending
+            && !isLeaveRoomPending
+    }
+
+    var canLeaveRoom: Bool {
+        guard entryPhase == .active, roomEntry != nil, !isLeaveRoomPending, !isTeamCreationPending else { return false }
+        guard gameIsActive else { return true }
+        return localGamePlayer?.isBankrupt == true
     }
 
     var canRollDice: Bool {
@@ -383,6 +397,24 @@ final class AppModel: ObservableObject {
               let authority = roomUpdate?.gameStartAuthorityUserID
         else { return false }
         return userID == authority
+    }
+
+    var canRequestGameStart: Bool {
+        entryPhase == .active
+            && roomEntry != nil
+            && hasJoinedTeam
+            && !gameIsActive
+            && !isGameStartPending
+            && aiSelectionRequest == nil
+            && activeInteraction == nil
+            && canCurrentUserStartGame
+    }
+
+    func canConfirmAISelection(_ request: AIPlayerSelectionRequest) -> Bool {
+        let count = selectedAIIDs.count
+        return aiSelectionRequest?.requestID == request.requestID
+            && canCurrentUserStartGame
+            && request.allowedAICounts.contains(count)
     }
 
     var currentBoardCell: BoardCellSnapshot? {
@@ -789,6 +821,7 @@ final class AppModel: ObservableObject {
             announce("게임 시작 권한이 있는 사용자만 게임을 시작할 수 있습니다.")
             return
         }
+        guard canRequestGameStart else { return }
         isGameStartPending = true
         socket.send(WireMessages.gameStart())
     }
@@ -818,12 +851,10 @@ final class AppModel: ObservableObject {
             announce("게임 시작 권한이 있는 사용자만 게임을 시작할 수 있습니다.")
             return
         }
-        let count = selectedAIIDs.count
-        guard request.humanPlayerCount + count >= 2 else {
+        guard canConfirmAISelection(request) else {
             alertMessage = "AI 플레이어를 선택하세요"
             return
         }
-        guard request.allowedAICounts.contains(count) else { return }
         let selected = request.availableAI.map(\.aiID).filter { selectedAIIDs.contains($0) }
         socket.send(WireMessages.gameStartAISelectionResponse(requestID: request.requestID, selectedAIIDs: selected))
         clearAISelection()
@@ -1570,7 +1601,7 @@ final class AppModel: ObservableObject {
     }
 
     func createTeamFromDraft() {
-        guard roomEntry != nil, !hasJoinedTeam, !isTeamCreationPending, !isLeaveRoomPending else { return }
+        guard canCreateTeam else { return }
         let teamName = teamNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         isTeamCreationPending = true
         socket.send(WireMessages.createTeam(teamName: teamName))
@@ -1595,7 +1626,7 @@ final class AppModel: ObservableObject {
     }
 
     func requestLeaveRoom() {
-        guard roomEntry != nil, !isLeaveRoomPending, !isTeamCreationPending else { return }
+        guard canLeaveRoom else { return }
         isLeaveRoomPending = true
         socket.send(WireMessages.leaveRoom())
     }

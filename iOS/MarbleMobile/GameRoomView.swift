@@ -55,7 +55,11 @@ struct GameRoomView: View {
                         if isInteractionBoardInspectionActive {
                             model.announceBoardInspectionActionBlocked()
                         } else if !model.performBoardEscape() {
-                            showLeaveConfirmation = true
+                            if model.canLeaveRoom {
+                                showLeaveConfirmation = true
+                            } else {
+                                model.announce("게임 진행 중에는 방에서 나갈 수 없습니다.")
+                            }
                         }
                     },
                     onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
@@ -94,7 +98,7 @@ struct GameRoomView: View {
                 titleVisibility: .visible
             ) {
                 Button("나가기", role: .destructive) { model.requestLeaveRoom() }
-                    .disabled(model.isLeaveRoomPending || model.isTeamCreationPending)
+                    .disabled(!model.canLeaveRoom)
                 Button("취소", role: .cancel) {}
             } message: {
                 Text("게임방에서 나가시겠습니까?")
@@ -205,7 +209,7 @@ struct GameRoomView: View {
             Button("나가기", role: .destructive) {
                 showLeaveConfirmation = true
             }
-            .disabled(model.isLeaveRoomPending || model.isTeamCreationPending)
+            .disabled(!model.canLeaveRoom)
 
             if model.hasJoinedTeam {
                 Spacer(minLength: 0)
@@ -294,16 +298,17 @@ struct GameRoomView: View {
             Button(model.isTeamCreationPending ? "팀 만드는 중" : "팀 만들기") {
                 model.createTeamFromDraft()
             }
-            .disabled(model.isTeamCreationPending)
+            .disabled(!model.canCreateTeam)
             .accessibilityFocused($directTouchExitAccessibilityFocus)
         } else if model.gameIsActive {
             Button("주사위 던지기") { model.performRollDice() }
+                .disabled(!model.canRollDice)
                 .accessibilityFocused($directTouchExitAccessibilityFocus)
         } else {
             Button(model.isGameStartPending ? "게임 시작 중" : "게임 시작") {
                 model.requestGameStart()
             }
-            .disabled(model.isGameStartPending)
+            .disabled(!model.canRequestGameStart)
             .accessibilityFocused($directTouchExitAccessibilityFocus)
         }
     }
@@ -316,7 +321,7 @@ struct GameRoomView: View {
                 .textFieldStyle(.roundedBorder)
                 .submitLabel(.done)
                 .onSubmit { model.createTeamFromDraft() }
-                .disabled(model.isTeamCreationPending)
+                .disabled(!model.canCreateTeam)
                 .accessibilityFocused($teamNameAccessibilityFocus)
                 .accessibilityHint("수정하지 않고 팀 만들기를 실행하면 현재 닉네임을 팀 이름으로 사용합니다.")
         }

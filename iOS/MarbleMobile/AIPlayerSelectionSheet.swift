@@ -26,6 +26,7 @@ struct AIPlayerSelectionSheet: View {
                 Section {
                     Button("확인") { model.confirmAISelection() }
                         .buttonStyle(.borderedProminent)
+                        .disabled(!model.canConfirmAISelection(request))
                     Button("취소", role: .cancel) { model.cancelAISelection() }
                 }
             }

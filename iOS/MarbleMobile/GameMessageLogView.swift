@@ -1,15 +1,46 @@
 import SwiftUI
 import UIKit
 
-/// Read-only live game log backed by UIKit's standard text view.
+/// Read-only live game log backed by UIKit's text view.
 ///
-/// The app only supplies the current text. UITextView and VoiceOver own focus,
-/// selection, scrolling, paging, and accessibility behavior.
+/// UITextView and VoiceOver own selection, focus, and ordinary navigation. The
+/// only app accessibility override is one-page vertical scrolling, because the
+/// standard VoiceOver page gesture was verified on-device to make negligible
+/// progress through this long live log.
+private final class GameMessageTextView: UITextView {
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        let minimumY = -adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            contentSize.height - bounds.height + adjustedContentInset.bottom
+        )
+        guard maximumY > minimumY + 1 else { return false }
+
+        let visibleHeight = max(1, bounds.height - adjustedContentInset.top - adjustedContentInset.bottom)
+        let pageStep = max(44, visibleHeight * 0.85)
+
+        let targetY: CGFloat
+        switch direction {
+        case .up, .next:
+            targetY = min(maximumY, contentOffset.y + pageStep)
+        case .down, .previous:
+            targetY = max(minimumY, contentOffset.y - pageStep)
+        default:
+            return super.accessibilityScroll(direction)
+        }
+
+        guard abs(targetY - contentOffset.y) > 1 else { return false }
+        setContentOffset(CGPoint(x: contentOffset.x, y: targetY), animated: false)
+        UIAccessibility.post(notification: .pageScrolled, argument: nil)
+        return true
+    }
+}
+
 struct GameMessageLogView: UIViewRepresentable {
     let messages: [String]
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        let view = GameMessageTextView()
         view.isEditable = false
         view.isSelectable = true
         view.backgroundColor = .clear
