@@ -2,39 +2,61 @@ import Foundation
 import SwiftUI
 import MarbleMobileCore
 
+final class InteractionDraftState: ObservableObject {
+    @Published private(set) var requestID: String?
+    @Published var selectedOne: String?
+    @Published var selectedMultiple: Set<String> = []
+    @Published var selectedByGroup: [String: String] = [:]
+    @Published var selectedBuildCityID: Int?
+    @Published var selectedBuildIDs: Set<String> = []
+
+    func prepare(for request: InteractionRequestSnapshot) {
+        guard requestID != request.requestID else { return }
+        requestID = request.requestID
+        selectedOne = request.interactionType == "select_one"
+            ? request.items.first(where: { !$0.disabled })?.id
+            : nil
+        selectedMultiple.removeAll()
+        selectedByGroup.removeAll()
+        selectedBuildCityID = request.interactionType == "select_city_and_buildings"
+            ? request.startBuildCities.first?.cityID
+            : nil
+        selectedBuildIDs.removeAll()
+    }
+
+    func reset() {
+        requestID = nil
+        selectedOne = nil
+        selectedMultiple.removeAll()
+        selectedByGroup.removeAll()
+        selectedBuildCityID = nil
+        selectedBuildIDs.removeAll()
+    }
+}
+
 struct GameInteractionSheet: View {
     @EnvironmentObject private var model: AppModel
     let request: InteractionRequestSnapshot
+    @ObservedObject var draft: InteractionDraftState
+    let focusBoardLookupOnAppear: Bool
+    let onBoardLookupFocusConsumed: () -> Void
+    let onBoardInspectionRequested: () -> Void
 
-    @State private var selectedOne: String?
-    @State private var selectedMultiple: Set<String> = []
-    @State private var selectedByGroup: [String: String] = [:]
-    @State private var selectedBuildCityID: Int?
-    @State private var selectedBuildIDs: Set<String> = []
-    @State private var isBoardInspection = false
-    @State private var boardInspectionFocusRequest = 0
-    @AccessibilityFocusState private var returnToInteractionFocus: Bool
     @AccessibilityFocusState private var boardLookupAccessibilityFocus: Bool
     @Namespace private var boardInspectionRotorNamespace
 
     var body: some View {
         NavigationStack {
-            Group {
-                if isBoardInspection {
-                    boardInspectionContent
-                } else {
-                    interactionForm
+            interactionForm
+                .interactiveDismissDisabled()
+                .onAppear {
+                    draft.prepare(for: request)
+                    guard focusBoardLookupOnAppear else { return }
+                    DispatchQueue.main.async {
+                        boardLookupAccessibilityFocus = true
+                        onBoardLookupFocusConsumed()
+                    }
                 }
-            }
-            .interactiveDismissDisabled()
-            .onAppear {
-                if request.interactionType == "select_one", selectedOne == nil {
-                    selectedOne = request.items.first(where: { !$0.disabled })?.id
-                }
-                if request.interactionType == "select_city_and_buildings", selectedBuildCityID == nil {
-                    selectedBuildCityID = request.startBuildCities.first?.cityID
-                }
-            }
         }
     }
 
@@ -48,7 +70,7 @@ struct GameInteractionSheet: View {
             }
 
             Section {
-                Button("보드 조회") { enterBoardInspection() }
+                Button("보드 조회") { onBoardInspectionRequested() }
                     .disabled(model.interactionResponseSubmitted || !model.isBoardReady)
                     .accessibilityRotorEntry(id: "board-inspection", in: boardInspectionRotorNamespace)
                     .accessibilityFocused($boardLookupAccessibilityFocus)
@@ -88,65 +110,6 @@ struct GameInteractionSheet: View {
         }
     }
 
-    private var boardInspectionContent: some View {
-        VStack(spacing: 8) {
-            Button("인터렉션으로 돌아가기") { exitBoardInspection() }
-                .buttonStyle(.borderedProminent)
-                .accessibilityFocused($returnToInteractionFocus)
-
-            GameBoardShell(
-                messages: model.roomMessages,
-                catalog: model.boardCatalog,
-                cursorIndex: model.boardCursor.index,
-                currentCellDescription: model.currentBoardAccessibilityDescription,
-                directTouchAvailable: model.isBoardReady,
-                accessibilityFocusRequest: boardInspectionFocusRequest,
-                directTouchHint: "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다.",
-                onExitDirectTouchOverride: focusReturnToInteractionButton,
-                onMoveLeft: model.moveBoardLeft,
-                onMoveRight: model.moveBoardRight,
-                onMoveUp: model.moveBoardUp,
-                onMoveDown: model.moveBoardDown,
-                onMagicTap: model.announceBoardInspectionActionBlocked,
-                onEscape: model.announceBoardInspectionActionBlocked,
-                onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
-                onRotorForward: model.rotateGameRotorForward,
-                onRotorBackward: model.rotateGameRotorBackward,
-                onPreviousRotorSelection: model.moveGameRotorSelectionBackward,
-                onNextRotorSelection: model.moveGameRotorSelectionForward,
-                onPreviousRotorDetail: model.moveGameRotorDetailBackward,
-                onNextRotorDetail: model.moveGameRotorDetailForward,
-                onLineA: { model.jumpToBoardLine("A") },
-                onLineB: { model.jumpToBoardLine("B") },
-                onLineC: { model.jumpToBoardLine("C") },
-                onLineD: { model.jumpToBoardLine("D") }
-            )
-        }
-        .padding(.horizontal)
-        .padding(.bottom, 8)
-        .navigationTitle("보드 조회")
-        .navigationBarTitleDisplayMode(.inline)
-        .accessibilityAction(.escape) { exitBoardInspection() }
-    }
-
-    private func enterBoardInspection() {
-        guard model.isBoardReady, !model.interactionResponseSubmitted else { return }
-        isBoardInspection = true
-        model.announceBoardInspectionStarted()
-        DispatchQueue.main.async { boardInspectionFocusRequest &+= 1 }
-    }
-
-    private func exitBoardInspection() {
-        guard isBoardInspection else { return }
-        isBoardInspection = false
-        model.announceBoardInspectionFinished()
-        DispatchQueue.main.async { boardLookupAccessibilityFocus = true }
-    }
-
-    private func focusReturnToInteractionButton() {
-        returnToInteractionFocus = false
-        DispatchQueue.main.async { returnToInteractionFocus = true }
-    }
 
     @ViewBuilder
     private var interactionContent: some View {
@@ -178,19 +141,19 @@ struct GameInteractionSheet: View {
                 ForEach(request.items) { item in
                     Button {
                         guard !item.disabled else { return }
-                        selectedOne = item.id
+                        draft.selectedOne = item.id
                     } label: {
                         HStack {
                             Text(model.interactionItemLabel(item, request: request))
                             Spacer()
-                            if selectedOne == item.id { Image(systemName: "checkmark") }
+                            if draft.selectedOne == item.id { Image(systemName: "checkmark") }
                         }
                     }
                     .disabled(item.disabled || model.interactionResponseSubmitted)
-                    .accessibilityValue(selectedOne == item.id ? "선택됨" : "")
+                    .accessibilityValue(draft.selectedOne == item.id ? "선택됨" : "")
                 }
                 Button("확인") {
-                    guard let selectedOne else {
+                    guard let selectedOne = draft.selectedOne else {
                         model.announce("항목을 선택해 주세요.")
                         return
                     }
@@ -207,10 +170,10 @@ struct GameInteractionSheet: View {
             Section("선택 항목") {
                 ForEach(request.items) { item in
                     Toggle(model.interactionItemLabel(item, request: request), isOn: Binding(
-                        get: { selectedMultiple.contains(item.id) },
+                        get: { draft.selectedMultiple.contains(item.id) },
                         set: { newValue in updateMultiple(item, selected: newValue) }
                     ))
-                    .disabled(item.disabled || (!selectedMultiple.contains(item.id) && !canAdd(item)) || model.interactionResponseSubmitted)
+                    .disabled(item.disabled || (!draft.selectedMultiple.contains(item.id) && !canAdd(item)) || model.interactionResponseSubmitted)
                 }
                 if request.missionType == "liquidation" {
                     Text(model.liquidationMarbleInfo(request, selectedSellValue: selectedMultipleCost))
@@ -230,16 +193,16 @@ struct GameInteractionSheet: View {
                     ForEach(group.items) { item in
                         Button {
                             guard !item.disabled else { return }
-                            selectedByGroup[group.role] = item.id
+                            draft.selectedByGroup[group.role] = item.id
                         } label: {
                             HStack {
                                 Text(model.interactionItemLabel(item, request: request, role: group.role))
                                 Spacer()
-                                if selectedByGroup[group.role] == item.id { Image(systemName: "checkmark") }
+                                if draft.selectedByGroup[group.role] == item.id { Image(systemName: "checkmark") }
                             }
                         }
                         .disabled(item.disabled || model.interactionResponseSubmitted)
-                        .accessibilityValue(selectedByGroup[group.role] == item.id ? "선택됨" : "")
+                        .accessibilityValue(draft.selectedByGroup[group.role] == item.id ? "선택됨" : "")
                     }
                 }
             }
@@ -253,27 +216,27 @@ struct GameInteractionSheet: View {
             ForEach(request.startBuildCities) { city in
                 Section(city.label) {
                     Button {
-                        selectedBuildCityID = city.cityID
-                        selectedBuildIDs = []
+                        draft.selectedBuildCityID = city.cityID
+                        draft.selectedBuildIDs = []
                     } label: {
                         HStack {
                             Text("이 도시 선택")
                             Spacer()
-                            if selectedBuildCityID == city.cityID { Image(systemName: "checkmark") }
+                            if draft.selectedBuildCityID == city.cityID { Image(systemName: "checkmark") }
                         }
                     }
                     .disabled(model.interactionResponseSubmitted)
-                    .accessibilityValue(selectedBuildCityID == city.cityID ? "선택됨" : "")
+                    .accessibilityValue(draft.selectedBuildCityID == city.cityID ? "선택됨" : "")
 
-                    if selectedBuildCityID == city.cityID {
+                    if draft.selectedBuildCityID == city.cityID {
                         ForEach(city.buildOptions) { item in
                             Toggle(model.interactionItemLabel(item, request: request), isOn: Binding(
-                                get: { selectedBuildIDs.contains(item.id) },
+                                get: { draft.selectedBuildIDs.contains(item.id) },
                                 set: { selected in updateStartBuild(item, selected: selected) }
                             ))
                             .disabled(
                                 item.disabled
-                                || (!selectedBuildIDs.contains(item.id) && !canAddStartBuild(item))
+                                || (!draft.selectedBuildIDs.contains(item.id) && !canAddStartBuild(item))
                                 || model.interactionResponseSubmitted
                             )
                         }
@@ -292,7 +255,7 @@ struct GameInteractionSheet: View {
     }
 
     private var selectedMultipleCost: Int {
-        request.items.filter { selectedMultiple.contains($0.id) }.reduce(0) { $0 + max(0, $1.cost) }
+        request.items.filter { draft.selectedMultiple.contains($0.id) }.reduce(0) { $0 + max(0, $1.cost) }
     }
 
     private func canAdd(_ item: InteractionItemSnapshot) -> Bool {
@@ -307,9 +270,9 @@ struct GameInteractionSheet: View {
                 model.announce("보유 마블이 부족합니다.")
                 return
             }
-            selectedMultiple.insert(item.id)
+            draft.selectedMultiple.insert(item.id)
         } else {
-            selectedMultiple.remove(item.id)
+            draft.selectedMultiple.remove(item.id)
         }
         if request.missionType == "liquidation" {
             model.announceLiquidationSelectionChanged(
@@ -320,7 +283,7 @@ struct GameInteractionSheet: View {
     }
 
     private func submitMultiple() {
-        guard !selectedMultiple.isEmpty else {
+        guard !draft.selectedMultiple.isEmpty else {
             model.announce("항목을 선택해 주세요.")
             return
         }
@@ -332,27 +295,27 @@ struct GameInteractionSheet: View {
             model.announce(shortage)
             return
         }
-        let ids = request.items.map(\.id).filter { selectedMultiple.contains($0) }
+        let ids = request.items.map(\.id).filter { draft.selectedMultiple.contains($0) }
         model.respondToInteraction(responseType: "selected", payload: ["selected_ids": ids])
     }
 
     private func submitGroups() {
-        guard request.groups.allSatisfy({ selectedByGroup[$0.role] != nil }) else {
+        guard request.groups.allSatisfy({ draft.selectedByGroup[$0.role] != nil }) else {
             model.announce("각 그룹에서 항목을 하나씩 선택해 주세요.")
             return
         }
         let selections = request.groups.map { group in
-            ["role": group.role, "selected_id": selectedByGroup[group.role]!] as [String: Any]
+            ["role": group.role, "selected_id": draft.selectedByGroup[group.role]!] as [String: Any]
         }
         model.respondToInteraction(responseType: "selected", payload: ["selections": selections])
     }
 
 
     private var selectedStartBuildCost: Int {
-        guard let cityID = selectedBuildCityID,
+        guard let cityID = draft.selectedBuildCityID,
               let city = request.startBuildCities.first(where: { $0.cityID == cityID }) else { return 0 }
         return city.buildOptions
-            .filter { selectedBuildIDs.contains($0.id) }
+            .filter { draft.selectedBuildIDs.contains($0.id) }
             .reduce(0) { $0 + max(0, $1.cost) }
     }
 
@@ -368,23 +331,23 @@ struct GameInteractionSheet: View {
                 model.announce("보유 마블이 부족합니다.")
                 return
             }
-            selectedBuildIDs.insert(item.id)
+            draft.selectedBuildIDs.insert(item.id)
         } else {
-            selectedBuildIDs.remove(item.id)
+            draft.selectedBuildIDs.remove(item.id)
         }
     }
 
     private func submitStartBuild() {
-        guard let cityID = selectedBuildCityID else {
+        guard let cityID = draft.selectedBuildCityID else {
             model.announce("도시를 선택해 주세요.")
             return
         }
         guard let city = request.startBuildCities.first(where: { $0.cityID == cityID }),
-              !selectedBuildIDs.isEmpty else {
+              !draft.selectedBuildIDs.isEmpty else {
             model.announce("건물을 선택해 주세요.")
             return
         }
-        let ids = city.buildOptions.map(\.id).filter { selectedBuildIDs.contains($0) }
+        let ids = city.buildOptions.map(\.id).filter { draft.selectedBuildIDs.contains($0) }
         model.respondToInteraction(
             responseType: "selected",
             payload: ["selected_city_id": cityID, "selected_ids": ids]

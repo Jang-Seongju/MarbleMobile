@@ -4,14 +4,20 @@ import MarbleMobileCore
 struct GameRoomView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showLeaveConfirmation = false
+    @StateObject private var interactionDraft = InteractionDraftState()
+    @State private var interactionBoardInspectionRequestID: String?
+    @State private var focusBoardLookupAfterInspection = false
     @AccessibilityFocusState private var teamNameAccessibilityFocus: Bool
     @AccessibilityFocusState private var directTouchExitAccessibilityFocus: Bool
+    @AccessibilityFocusState private var returnToInteractionAccessibilityFocus: Bool
     @State private var boardAccessibilityFocusRequest = 0
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 3) {
                 topControls
+                    .allowsHitTesting(!isInteractionBoardInspectionActive)
+                    .accessibilityHidden(isInteractionBoardInspectionActive)
 
                 if !model.hasJoinedTeam {
                     teamSetupArea
@@ -24,17 +30,31 @@ struct GameRoomView: View {
                     catalog: model.boardCatalog,
                     cursorIndex: model.boardCursor.index,
                     currentCellDescription: model.currentBoardAccessibilityDescription,
-                    directTouchAvailable: model.isBoardDirectTouchAreaAvailable,
+                    directTouchAvailable: isInteractionBoardInspectionActive
+                        ? model.isBoardReady
+                        : model.isBoardDirectTouchAreaAvailable,
                     accessibilityFocusRequest: boardAccessibilityFocusRequest,
-                    directTouchHint: "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환합니다.",
-                    onExitDirectTouchOverride: focusPrimaryActionAfterDirectTouch,
+                    directTouchHint: isInteractionBoardInspectionActive
+                        ? "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다."
+                        : "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환합니다.",
+                    onExitDirectTouchOverride: isInteractionBoardInspectionActive
+                        ? focusReturnToInteractionAfterDirectTouch
+                        : focusPrimaryActionAfterDirectTouch,
                     onMoveLeft: model.moveBoardLeft,
                     onMoveRight: model.moveBoardRight,
                     onMoveUp: model.moveBoardUp,
                     onMoveDown: model.moveBoardDown,
-                    onMagicTap: model.performBoardMagicTap,
+                    onMagicTap: {
+                        if isInteractionBoardInspectionActive {
+                            model.announceBoardInspectionActionBlocked()
+                        } else {
+                            model.performBoardMagicTap()
+                        }
+                    },
                     onEscape: {
-                        if !model.performBoardEscape() {
+                        if isInteractionBoardInspectionActive {
+                            model.announceBoardInspectionActionBlocked()
+                        } else if !model.performBoardEscape() {
                             showLeaveConfirmation = true
                         }
                     },
@@ -53,6 +73,8 @@ struct GameRoomView: View {
                 .layoutPriority(1)
 
                 chatArea
+                    .allowsHitTesting(!isInteractionBoardInspectionActive)
+                    .accessibilityHidden(isInteractionBoardInspectionActive)
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
@@ -91,14 +113,35 @@ struct GameRoomView: View {
                     .environmentObject(model)
             }
             .sheet(item: interactionSheetBinding, onDismiss: interactionSheetDidDismiss) { request in
-                GameInteractionSheet(request: request)
-                    .id(request.requestID)
-                    .environmentObject(model)
+                GameInteractionSheet(
+                    request: request,
+                    draft: interactionDraft,
+                    focusBoardLookupOnAppear: focusBoardLookupAfterInspection,
+                    onBoardLookupFocusConsumed: { focusBoardLookupAfterInspection = false },
+                    onBoardInspectionRequested: { beginInteractionBoardInspection(for: request) }
+                )
+                .id(request.requestID)
+                .environmentObject(model)
+            }
+            .onChange(of: model.activeInteraction?.requestID) { _, requestID in
+                guard let inspectionID = interactionBoardInspectionRequestID else { return }
+                if requestID != inspectionID {
+                    interactionBoardInspectionRequestID = nil
+                    focusBoardLookupAfterInspection = false
+                    interactionDraft.reset()
+                }
             }
         }
     }
 
     private func interactionSheetDidDismiss() {
+        if isInteractionBoardInspectionActive {
+            // Wait for the real sheet-dismiss boundary before moving VoiceOver to the
+            // already existing game-board Direct Touch surface. No timing guess is needed.
+            DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
+            return
+        }
+
         // Normal server-driven completion must not force VoiceOver back to the board.
         // That focus jump can interrupt the result presentation that follows the close.
         DispatchQueue.main.async {
@@ -109,12 +152,37 @@ struct GameRoomView: View {
     private var interactionSheetBinding: Binding<InteractionRequestSnapshot?> {
         Binding(
             get: {
-                model.isWorldTravelDestinationSelectionActive
+                (model.isWorldTravelDestinationSelectionActive || isInteractionBoardInspectionActive)
                     ? nil
                     : model.activeInteraction
             },
             set: { _ in }
         )
+    }
+
+    private var isInteractionBoardInspectionActive: Bool {
+        guard let requestID = interactionBoardInspectionRequestID,
+              let active = model.activeInteraction
+        else { return false }
+        return active.requestID == requestID
+    }
+
+    private func beginInteractionBoardInspection(for request: InteractionRequestSnapshot) {
+        guard model.activeInteraction?.requestID == request.requestID,
+              model.isBoardReady,
+              !model.interactionResponseSubmitted
+        else { return }
+        interactionDraft.prepare(for: request)
+        interactionBoardInspectionRequestID = request.requestID
+        focusBoardLookupAfterInspection = false
+        model.announceBoardInspectionStarted()
+    }
+
+    private func exitInteractionBoardInspection() {
+        guard isInteractionBoardInspectionActive else { return }
+        interactionBoardInspectionRequestID = nil
+        focusBoardLookupAfterInspection = true
+        model.announceBoardInspectionFinished()
     }
 
     private var roomTitle: String {
@@ -158,7 +226,24 @@ struct GameRoomView: View {
         DispatchQueue.main.async { directTouchExitAccessibilityFocus = true }
     }
 
+    private func focusReturnToInteractionAfterDirectTouch() {
+        returnToInteractionAccessibilityFocus = false
+        DispatchQueue.main.async { returnToInteractionAccessibilityFocus = true }
+    }
+
+    @ViewBuilder
     private var gameActionControls: some View {
+        if isInteractionBoardInspectionActive {
+            Button("인터렉션으로 돌아가기") { exitInteractionBoardInspection() }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+                .accessibilityFocused($returnToInteractionAccessibilityFocus)
+        } else {
+            normalGameActionControls
+        }
+    }
+
+    private var normalGameActionControls: some View {
         HStack(spacing: 8) {
             primaryAction
                 .frame(maxWidth: .infinity)
