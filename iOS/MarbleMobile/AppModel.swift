@@ -74,8 +74,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var salaryBoosterSelected = false
     private var isRoomEntryRecoveryPending = false
     private var pendingSilentHeldCardQuery = false
+    private struct InteractionPresentationBarrier {
+        let token: UUID
+        let requestID: String?
+        let completion: () -> Void
+    }
+
     private var aiSelectionHistory: [String] = []
     private var activatedInteractionRequestIDs: Set<String> = []
+    private var pendingInteractionActivation: InteractionRequestSnapshot?
+    private var pendingInteractionOpenBarrier: InteractionPresentationBarrier?
+    private var pendingInteractionCloseBarrier: InteractionPresentationBarrier?
     private var pendingRotorDirections: [String: [Bool]] = [:]
     private var aiRemainderTextOnly = false
     private var aiRemainderActivationPending = false
@@ -325,6 +334,7 @@ final class AppModel: ObservableObject {
     var isBoardDirectTouchAreaAvailable: Bool {
         isBoardReady
             && aiSelectionRequest == nil
+            && pendingInteractionActivation == nil
             && (activeInteraction == nil || isWorldTravelDestinationSelectionActive)
     }
 
@@ -334,7 +344,7 @@ final class AppModel: ObservableObject {
     }
 
     var islandContextAction: IslandContextAction? {
-        guard gameIsActive, !gameFinished, activeInteraction == nil, aiSelectionRequest == nil,
+        guard gameIsActive, !gameFinished, activeInteraction == nil, pendingInteractionActivation == nil, aiSelectionRequest == nil,
               let player = localGamePlayer, !player.isBankrupt, player.isStranded else { return nil }
         if heldCardID == "island_escape" { return .escapeCard }
         return player.marble >= 200_000 ? .bail : nil
@@ -349,7 +359,7 @@ final class AppModel: ObservableObject {
     }
 
     var salaryBoosterContextAvailable: Bool {
-        guard gameIsActive, !gameFinished, activeInteraction == nil, aiSelectionRequest == nil,
+        guard gameIsActive, !gameFinished, activeInteraction == nil, pendingInteractionActivation == nil, aiSelectionRequest == nil,
               let player = localGamePlayer, !player.isBankrupt else { return false }
         return heldCardID == "salary_booster"
     }
@@ -1053,6 +1063,7 @@ final class AppModel: ObservableObject {
             turnActionStarted = false
             isGameStartPending = false
             clearAISelection()
+            clearInteractionPresentationGates()
             activeInteraction = nil
             interactionResponseSubmitted = false
             activatedInteractionRequestIDs = []
@@ -1143,6 +1154,7 @@ final class AppModel: ObservableObject {
             currentTurnGeneration = nil
             gameIsActive = false
             gameFinished = true
+            clearInteractionPresentationGates()
             activeInteraction = nil
             interactionResponseSubmitted = false
         } else if type == "roll_dice_rejected" {
@@ -1292,15 +1304,18 @@ final class AppModel: ObservableObject {
         guard gameIsActive else { return }
         do {
             let request = try InteractionRequestParser.parse(data)
-            if activeInteraction?.requestID == request.requestID { return }
-            activeInteraction = request
+            if activeInteraction?.requestID == request.requestID
+                || pendingInteractionActivation?.requestID == request.requestID { return }
+
+            // The request exists immediately for input gating, but presentation is held
+            // behind only the output that was already queued before this request. Later
+            // unrelated output is deliberately not part of this boundary.
+            pendingInteractionActivation = request
             interactionResponseSubmitted = false
             turnActionStarted = true
-            if request.interactionType == "select_destination" {
-                if activatedInteractionRequestIDs.insert(request.requestID).inserted {
-                    socket.send(WireMessages.interactionPresentationActivate(requestID: request.requestID))
-                }
-            } else if request.interactionType != "acknowledge" {
+
+            if request.interactionType != "acknowledge"
+                && request.interactionType != "select_destination" {
                 let announcement = interactionEntryAnnouncement(request)
                 if !announcement.isEmpty {
                     output.emit(PresentationPlan(
@@ -1311,6 +1326,38 @@ final class AppModel: ObservableObject {
                     ))
                 }
             }
+
+            output.enqueueAsyncBarrier { [weak self] completion in
+                guard let self,
+                      self.pendingInteractionActivation?.requestID == request.requestID,
+                      self.gameIsActive else {
+                    completion()
+                    return
+                }
+
+                self.pendingInteractionActivation = nil
+                self.activeInteraction = request
+                self.interactionResponseSubmitted = false
+
+                if request.interactionType == "select_destination" {
+                    if self.activatedInteractionRequestIDs.insert(request.requestID).inserted {
+                        self.socket.send(WireMessages.interactionPresentationActivate(requestID: request.requestID))
+                    }
+                    completion()
+                    return
+                }
+
+                // A SwiftUI sheet changes VoiceOver focus outside the presentation queue.
+                // Hold the queue only until the sheet has appeared and that focus change
+                // has settled, so it cannot cut the causal TTS that came before it.
+                let token = UUID()
+                self.pendingInteractionOpenBarrier = .init(
+                    token: token,
+                    requestID: request.requestID,
+                    completion: completion
+                )
+                self.scheduleInteractionBarrierFallback(token: token, opening: true)
+            }
         } catch {
             return
         }
@@ -1319,13 +1366,90 @@ final class AppModel: ObservableObject {
     private func handleInteractionFlowCompleted(_ data: [String: Any]) {
         guard let flowID = data["interaction_flow_id"] as? String,
               !flowID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard activeInteraction == nil || activeInteraction?.flowID == flowID else { return }
-        if activeInteraction?.interactionType == "select_destination" {
-            output.stopBGM()
+
+        if pendingInteractionActivation?.flowID == flowID {
+            pendingInteractionActivation = nil
         }
-        activeInteraction = nil
-        interactionResponseSubmitted = false
-        activatedInteractionRequestIDs.removeAll()
+        guard activeInteraction == nil || activeInteraction?.flowID == flowID else { return }
+        guard let current = activeInteraction else {
+            interactionResponseSubmitted = false
+            activatedInteractionRequestIDs.removeAll()
+            return
+        }
+
+        if current.interactionType == "select_destination" {
+            output.stopBGM()
+            output.enqueueBarrier { [weak self] in
+                guard let self, self.activeInteraction?.flowID == flowID else { return }
+                self.activeInteraction = nil
+                self.interactionResponseSubmitted = false
+                self.activatedInteractionRequestIDs.removeAll()
+            }
+            return
+        }
+
+        // Result presentation that arrived before flow_completed must finish before the
+        // modal disappears. The barrier ends as soon as the sheet has actually closed;
+        // later unrelated output is not delayed beyond that UI transition.
+        output.enqueueAsyncBarrier { [weak self] completion in
+            guard let self, self.activeInteraction?.flowID == flowID else {
+                completion()
+                return
+            }
+            let token = UUID()
+            self.pendingInteractionCloseBarrier = .init(
+                token: token,
+                requestID: self.activeInteraction?.requestID,
+                completion: completion
+            )
+            self.activeInteraction = nil
+            self.interactionResponseSubmitted = false
+            self.activatedInteractionRequestIDs.removeAll()
+            self.scheduleInteractionBarrierFallback(token: token, opening: false)
+        }
+    }
+
+    func interactionSheetDidAppear(requestID: String) {
+        guard let barrier = pendingInteractionOpenBarrier, barrier.requestID == requestID else { return }
+        pendingInteractionOpenBarrier = nil
+        DispatchQueue.main.async { barrier.completion() }
+    }
+
+    func interactionSheetDidDismiss() {
+        guard let barrier = pendingInteractionCloseBarrier else { return }
+        pendingInteractionCloseBarrier = nil
+        // onDismiss is invoked after the modal is gone. Give the presenting view one
+        // run-loop turn to post its board focus restoration before later TTS can start.
+        DispatchQueue.main.async { barrier.completion() }
+    }
+
+    private func scheduleInteractionBarrierFallback(token: UUID, opening: Bool) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            if opening {
+                guard let barrier = self.pendingInteractionOpenBarrier, barrier.token == token else { return }
+                self.pendingInteractionOpenBarrier = nil
+                barrier.completion()
+            } else {
+                guard let barrier = self.pendingInteractionCloseBarrier, barrier.token == token else { return }
+                self.pendingInteractionCloseBarrier = nil
+                barrier.completion()
+            }
+        }
+    }
+
+
+    private func clearInteractionPresentationGates() {
+        pendingInteractionActivation = nil
+        let open = pendingInteractionOpenBarrier
+        let close = pendingInteractionCloseBarrier
+        pendingInteractionOpenBarrier = nil
+        pendingInteractionCloseBarrier = nil
+        // If a presentation barrier is already executing, release it before resetting
+        // gameplay state. IOSOutputOrchestrator will ignore stale completions after a
+        // generation-changing stopAll(), so this is safe for both soft and hard resets.
+        open?.completion()
+        close?.completion()
     }
 
     private func dequeuePendingRotorDirection(for queryType: String) -> Bool? {
@@ -1736,6 +1860,7 @@ final class AppModel: ObservableObject {
 
         turnDeadlineWarning.stop(preserveZeroSFX: false)
         clearAISelection()
+        clearInteractionPresentationGates()
         activeInteraction = nil
         interactionResponseSubmitted = false
         activatedInteractionRequestIDs = []
@@ -1872,6 +1997,7 @@ final class AppModel: ObservableObject {
 
     private func restoreRecoveredInteraction(_ data: [String: Any]) {
         guard let request = try? InteractionRequestParser.parse(data) else { return }
+        clearInteractionPresentationGates()
         activeInteraction = request
         interactionResponseSubmitted = false
         turnActionStarted = true
@@ -1992,6 +2118,7 @@ final class AppModel: ObservableObject {
     private func clearGameplayState() {
         turnDeadlineWarning.stop(preserveZeroSFX: false)
         clearAISelection()
+        clearInteractionPresentationGates()
         activeInteraction = nil
         interactionResponseSubmitted = false
         activatedInteractionRequestIDs = []

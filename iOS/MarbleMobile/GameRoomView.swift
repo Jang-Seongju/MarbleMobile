@@ -12,7 +12,9 @@ struct GameRoomView: View {
             VStack(spacing: 3) {
                 topControls
 
-                teamArea
+                if !model.hasJoinedTeam {
+                    teamSetupArea
+                }
 
                 gameActionControls
 
@@ -87,7 +89,7 @@ struct GameRoomView: View {
                 AIPlayerSelectionSheet(request: request)
                     .environmentObject(model)
             }
-            .sheet(item: interactionSheetBinding, onDismiss: restoreBoardAccessibilityFocus) { request in
+            .sheet(item: interactionSheetBinding, onDismiss: interactionSheetDidDismiss) { request in
                 GameInteractionSheet(request: request)
                     .id(request.requestID)
                     .environmentObject(model)
@@ -95,9 +97,13 @@ struct GameRoomView: View {
         }
     }
 
-    private func restoreBoardAccessibilityFocus() {
-        guard model.isBoardReady else { return }
-        DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
+    private func interactionSheetDidDismiss() {
+        if model.isBoardReady {
+            boardAccessibilityFocusRequest &+= 1
+        }
+        DispatchQueue.main.async {
+            model.interactionSheetDidDismiss()
+        }
     }
 
     private var interactionSheetBinding: Binding<InteractionRequestSnapshot?> {
@@ -132,6 +138,16 @@ struct GameRoomView: View {
                 showLeaveConfirmation = true
             }
             .disabled(model.isLeaveRoomPending || model.isTeamCreationPending)
+
+            if model.hasJoinedTeam {
+                Spacer(minLength: 0)
+                Text("팀: \(model.currentTeamName ?? model.teamNameDraft)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .accessibilityLabel("팀 이름")
+                    .accessibilityValue(model.currentTeamName ?? model.teamNameDraft)
+            }
         }
         .buttonStyle(.bordered)
         .frame(maxWidth: .infinity)
@@ -199,25 +215,17 @@ struct GameRoomView: View {
         }
     }
 
-    @ViewBuilder
-    private var teamArea: some View {
-        if model.hasJoinedTeam {
-            Text("팀: \(model.currentTeamName ?? model.teamNameDraft)")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("팀 이름")
-                .accessibilityValue(model.currentTeamName ?? model.teamNameDraft)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("팀 이름")
-                    .font(.caption)
-                TextField("팀 이름", text: $model.teamNameDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .submitLabel(.done)
-                    .onSubmit { model.createTeamFromDraft() }
-                    .disabled(model.isTeamCreationPending)
-                    .accessibilityFocused($teamNameAccessibilityFocus)
-                    .accessibilityHint("수정하지 않고 팀 만들기를 실행하면 현재 닉네임을 팀 이름으로 사용합니다.")
-            }
+    private var teamSetupArea: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("팀 이름")
+                .font(.caption)
+            TextField("팀 이름", text: $model.teamNameDraft)
+                .textFieldStyle(.roundedBorder)
+                .submitLabel(.done)
+                .onSubmit { model.createTeamFromDraft() }
+                .disabled(model.isTeamCreationPending)
+                .accessibilityFocused($teamNameAccessibilityFocus)
+                .accessibilityHint("수정하지 않고 팀 만들기를 실행하면 현재 닉네임을 팀 이름으로 사용합니다.")
         }
     }
 
@@ -235,7 +243,7 @@ struct GameRoomView: View {
 }
 
 struct GameBoardShell: View {
-    @AccessibilityFocusState private var messageAccessibilityFocus: Bool
+    @State private var focusLatestMessageRequest = 0
 
     let messages: [String]
     let catalog: BoardCatalogSnapshot?
@@ -299,10 +307,7 @@ struct GameBoardShell: View {
                             if let onExitDirectTouchOverride {
                                 onExitDirectTouchOverride()
                             } else {
-                                messageAccessibilityFocus = false
-                                DispatchQueue.main.async {
-                                    messageAccessibilityFocus = true
-                                }
+                                focusLatestMessageRequest &+= 1
                             }
                         },
                         onMagicTap: onMagicTap,
@@ -350,23 +355,10 @@ struct GameBoardShell: View {
     }
 
     private var messageArea: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 6) {
-                if messages.isEmpty {
-                    Text("게임 메시지가 없습니다.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(messages.enumerated()), id: \.offset) { _, message in
-                        Text(message)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-            .padding(8)
-        }
+        GameMessageLogView(
+            messages: messages,
+            focusLatestRequest: focusLatestMessageRequest
+        )
         .background(.thinMaterial)
-        .accessibilityLabel("게임 메시지")
-        .accessibilityFocused($messageAccessibilityFocus)
     }
 }

@@ -13,7 +13,6 @@ struct GameInteractionSheet: View {
     @State private var selectedBuildIDs: Set<String> = []
     @State private var isBoardInspection = false
     @State private var boardInspectionFocusRequest = 0
-    @AccessibilityFocusState private var primaryFocus: Bool
     @AccessibilityFocusState private var returnToInteractionFocus: Bool
     @AccessibilityFocusState private var boardLookupAccessibilityFocus: Bool
     @Namespace private var boardInspectionRotorNamespace
@@ -35,7 +34,9 @@ struct GameInteractionSheet: View {
                 if request.interactionType == "select_city_and_buildings", selectedBuildCityID == nil {
                     selectedBuildCityID = request.startBuildCities.first?.cityID
                 }
-                DispatchQueue.main.async { primaryFocus = true }
+                DispatchQueue.main.async {
+                    model.interactionSheetDidAppear(requestID: request.requestID)
+                }
             }
         }
     }
@@ -46,7 +47,6 @@ struct GameInteractionSheet: View {
             if !description.isEmpty {
                 Section {
                     Text(description)
-                        .accessibilityFocused($primaryFocus)
                 }
             }
 
