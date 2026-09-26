@@ -3,127 +3,35 @@ import UIKit
 
 /// Read-only live game log backed by UIKit's standard text view.
 ///
-/// VoiceOver focus is never chosen, pinned, or moved by the app. UIKit owns text
-/// accessibility and scrolling. The app only follows the visual tail while the user
-/// is already at the end of the log.
+/// The app only supplies the current text. UITextView and VoiceOver own focus,
+/// selection, scrolling, paging, and accessibility behavior.
 struct GameMessageLogView: UIViewRepresentable {
     let messages: [String]
 
-    func makeUIView(context: Context) -> GameMessageTextView {
-        let view = GameMessageTextView()
-        view.update(messages: messages)
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.backgroundColor = .clear
+        view.font = UIFont.preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        view.textContainer.lineFragmentPadding = 0
+        apply(messages: messages, to: view)
         return view
     }
 
-    func updateUIView(_ uiView: GameMessageTextView, context: Context) {
-        uiView.update(messages: messages)
-    }
-}
-
-final class GameMessageTextView: UITextView, UITextViewDelegate {
-    private var renderedMessages: [String] = []
-    private var shouldFollowTail = true
-
-    override init(frame: CGRect, textContainer: NSTextContainer?) {
-        super.init(frame: frame, textContainer: textContainer)
-        configure()
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        apply(messages: messages, to: uiView)
     }
 
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        configure()
-    }
+    private func apply(messages: [String], to view: UITextView) {
+        let displayedText = messages.isEmpty
+            ? "게임 메시지가 없습니다."
+            : messages.joined(separator: "\n")
 
-    func update(messages: [String]) {
-        guard messages != renderedMessages else { return }
-
-        let previousOffset = contentOffset
-        let wasEmpty = renderedMessages.isEmpty
-        let isPureAppend = !renderedMessages.isEmpty
-            && messages.count >= renderedMessages.count
-            && Array(messages.prefix(renderedMessages.count)) == renderedMessages
-        let followTailAfterUpdate = isPureAppend ? (shouldFollowTail || isAtTail) : true
-
-        if isPureAppend {
-            let appended = messages.dropFirst(renderedMessages.count)
-            if !appended.isEmpty {
-                text += "\n" + appended.joined(separator: "\n")
-            }
-        } else {
-            text = messages.isEmpty
-                ? "게임 메시지가 없습니다."
-                : messages.joined(separator: "\n")
-        }
-
-        textColor = messages.isEmpty ? .secondaryLabel : .label
-        renderedMessages = messages
-
-        // Make the standard text view resolve its new content geometry before deciding
-        // whether to follow the tail or preserve the user's current scroll position.
-        layoutManager.ensureLayout(for: textContainer)
-        layoutIfNeeded()
-
-        if followTailAfterUpdate {
-            scrollToLatest(animated: !wasEmpty)
-            shouldFollowTail = true
-        } else {
-            // The user is reading older output. Appending text must not pull the
-            // viewport back to the end, and no accessibility focus notification is sent.
-            setContentOffset(clampedOffset(previousOffset), animated: false)
-            shouldFollowTail = false
-        }
-    }
-
-    private func configure() {
-        isEditable = false
-        isSelectable = true
-        isScrollEnabled = true
-        alwaysBounceVertical = true
-        showsVerticalScrollIndicator = true
-        backgroundColor = .clear
-
-        font = UIFont.preferredFont(forTextStyle: .body)
-        adjustsFontForContentSizeCategory = true
-        textColor = .label
-        textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        textContainer.lineFragmentPadding = 0
-
-        // Leave UIKit/VoiceOver's standard UITextView accessibility behavior intact.
-        // In particular, do not add custom adjustable elements, custom page values,
-        // accessibilityScroll overrides, or focus-changing notifications.
-        delegate = self
-    }
-
-    private var minimumOffsetY: CGFloat {
-        -adjustedContentInset.top
-    }
-
-    private var maximumOffsetY: CGFloat {
-        max(
-            minimumOffsetY,
-            contentSize.height - bounds.height + adjustedContentInset.bottom
-        )
-    }
-
-    private var isAtTail: Bool {
-        maximumOffsetY - contentOffset.y <= 1
-    }
-
-    private func clampedOffset(_ offset: CGPoint) -> CGPoint {
-        CGPoint(
-            x: offset.x,
-            y: min(maximumOffsetY, max(minimumOffsetY, offset.y))
-        )
-    }
-
-    private func scrollToLatest(animated: Bool) {
-        setContentOffset(
-            CGPoint(x: contentOffset.x, y: maximumOffsetY),
-            animated: animated
-        )
-    }
-
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        shouldFollowTail = isAtTail
+        view.textColor = messages.isEmpty ? .secondaryLabel : .label
+        guard view.text != displayedText else { return }
+        view.text = displayedText
     }
 }
