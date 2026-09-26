@@ -98,9 +98,8 @@ struct GameRoomView: View {
     }
 
     private func interactionSheetDidDismiss() {
-        if model.isBoardReady {
-            boardAccessibilityFocusRequest &+= 1
-        }
+        // Normal server-driven completion must not force VoiceOver back to the board.
+        // That focus jump can interrupt the result presentation that follows the close.
         DispatchQueue.main.async {
             model.interactionSheetDidDismiss()
         }

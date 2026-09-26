@@ -47,8 +47,9 @@ final class GameMessageLogUIView: UIView {
         element.logView = self
         element.isAccessibilityElement = true
         element.accessibilityTraits = [.adjustable]
-        // Do not manufacture a label/value. VoiceOver should expose the system role
-        // and any native page feedback it can derive from the scroll operation.
+        // No invented label. The value is only the real scroll geometry, for example
+        // “14페이지 중 14페이지”, so VoiceOver can announce position while the same
+        // adjustable element keeps focus across increment/decrement.
         return element
     }()
 
@@ -65,6 +66,7 @@ final class GameMessageLogUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         pagingElement.accessibilityFrameInContainerSpace = bounds
+        updatePagingAccessibilityValue()
     }
 
     func update(messages: [String], focusLatestRequest: Int) {
@@ -88,6 +90,7 @@ final class GameMessageLogUIView: UIView {
                 guard let self else { return }
                 self.layoutIfNeeded()
                 self.scrollToLatest(animated: !wasEmpty)
+                self.updatePagingAccessibilityValue()
             }
         }
 
@@ -212,17 +215,46 @@ final class GameMessageLogUIView: UIView {
             CGPoint(x: scrollView.contentOffset.x, y: maximumOffsetY),
             animated: animated
         )
+        updatePagingAccessibilityValue()
     }
 
     private func page(by delta: CGFloat) {
         layoutIfNeeded()
         let current = scrollView.contentOffset.y
         let target = min(maximumOffsetY, max(minimumOffsetY, current + delta))
-        guard abs(target - current) > 0.5 else { return }
-        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: target), animated: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            UIAccessibility.post(notification: .pageScrolled, argument: nil)
+        guard abs(target - current) > 0.5 else {
+            updatePagingAccessibilityValue()
+            return
         }
+
+        // Keep the adjustable element itself focused. Posting pageScrolled here makes
+        // VoiceOver search for newly visible elements and was the source of the focus
+        // jump. Adjustable controls automatically re-announce their changed value.
+        scrollView.setContentOffset(
+            CGPoint(x: scrollView.contentOffset.x, y: target),
+            animated: false
+        )
+        updatePagingAccessibilityValue()
+    }
+
+    private func updatePagingAccessibilityValue() {
+        let pageHeight = visiblePageHeight
+        let range = max(0, maximumOffsetY - minimumOffsetY)
+        let totalPages = max(1, Int(ceil(range / pageHeight)) + 1)
+        let offset = min(maximumOffsetY, max(minimumOffsetY, scrollView.contentOffset.y))
+
+        let currentPage: Int
+        if totalPages == 1 {
+            currentPage = 1
+        } else if offset >= maximumOffsetY - 0.5 {
+            currentPage = totalPages
+        } else {
+            currentPage = min(
+                totalPages,
+                max(1, Int(floor((offset - minimumOffsetY) / pageHeight)) + 1)
+            )
+        }
+        pagingElement.accessibilityValue = "\(currentPage)페이지 중 \(totalPages)페이지"
     }
 
     private func focusLatestMessage() {

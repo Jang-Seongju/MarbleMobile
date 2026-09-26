@@ -34,9 +34,6 @@ struct GameInteractionSheet: View {
                 if request.interactionType == "select_city_and_buildings", selectedBuildCityID == nil {
                     selectedBuildCityID = request.startBuildCities.first?.cityID
                 }
-                DispatchQueue.main.async {
-                    model.interactionSheetDidAppear(requestID: request.requestID)
-                }
             }
         }
     }
