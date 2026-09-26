@@ -247,31 +247,34 @@ struct GameMessageLogView: UIViewRepresentable {
         guard !newMessages.isEmpty else { return }
 
         let suffix = "\n" + newMessages.joined(separator: "\n")
-        let insertionLocation = view.textStorage.length
-        let insertedLength = (suffix as NSString).length
+        var attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: UIColor.label
+        ]
+        if let font = view.font {
+            attributes[.font] = font
+        }
+        let attributedSuffix = NSAttributedString(string: suffix, attributes: attributes)
 
         GameMessageScrollDiagnostics.record(
-            "TEXT_APPEND BEGIN addedMessages=\(newMessages.count) oldCount=\(coordinator.renderedMessages.count) newCount=\(allMessages.count) \(GameMessageScrollDiagnostics.describe(view))"
+            "TEXT_APPEND BEGIN addedMessages=\(newMessages.count) oldCount=\(coordinator.renderedMessages.count) newCount=\(allMessages.count) textKit2=\(view.textLayoutManager != nil) \(GameMessageScrollDiagnostics.describe(view))"
         )
 
-        view.textStorage.beginEditing()
-        view.textStorage.replaceCharacters(
-            in: NSRange(location: insertionLocation, length: 0),
-            with: suffix
-        )
-        if insertedLength > 0 {
-            var attributes: [NSAttributedString.Key: Any] = [
-                .foregroundColor: UIColor.label
-            ]
-            if let font = view.font {
-                attributes[.font] = font
+        // UITextView uses TextKit 2 by default on current iOS. Mutating the
+        // backing NSTextStorage outside an editing transaction can leave the
+        // TextKit 2 layout pipeline unaware of the change. Keep the existing
+        // document and append only the new suffix, but do it through the text
+        // content manager's editing transaction so layout/accessibility can
+        // observe the incremental edit.
+        if let textContentManager = view.textLayoutManager?.textContentManager {
+            textContentManager.performEditingTransaction {
+                view.textStorage.append(attributedSuffix)
             }
-            view.textStorage.addAttributes(
-                attributes,
-                range: NSRange(location: insertionLocation, length: insertedLength)
-            )
+        } else {
+            // Defensive fallback for a TextKit 1 configuration.
+            view.textStorage.beginEditing()
+            view.textStorage.append(attributedSuffix)
+            view.textStorage.endEditing()
         }
-        view.textStorage.endEditing()
         coordinator.markRendered(messages: allMessages)
 
         GameMessageScrollDiagnostics.record(
