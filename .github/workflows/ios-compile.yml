@@ -36,7 +36,7 @@ jobs:
           APP_PATH="$(find "$HOME/Library/Developer/Xcode/DerivedData" -type d -path '*/Build/Products/Debug-iphonesimulator/MarbleMobile.app' -print -quit)"
           test -n "$APP_PATH"
           AUDIO_COUNT="$(find "$APP_PATH" -type f \( -iname '*.wav' -o -iname '*.mp3' \) | wc -l | tr -d ' ')"
-          test "$AUDIO_COUNT" = "76"
+          test "$AUDIO_COUNT" = "78"
           for clip in game_start.wav my_turn.wav dice_roll.wav move_step_12.wav money_in.wav money_out.wav login.WAV ticktock_0.WAV airport_world.mp3 airplane.mp3; do
             test -n "$(find "$APP_PATH" -type f -name "$clip" -print -quit)"
           done
