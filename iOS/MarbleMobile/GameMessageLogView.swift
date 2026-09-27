@@ -1,181 +1,176 @@
 import SwiftUI
 import UIKit
 
-/// Read-only live game log backed by UIKit's text view.
+/// Live game-message list.
 ///
-/// UITextView and VoiceOver own selection, focus, and ordinary navigation. The
-/// only app accessibility override is one-page vertical scrolling, because the
-/// standard VoiceOver page gesture was verified on-device to make negligible
-/// progress through this long live log.
-private final class GameMessageTextView: UITextView {
-    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
-        let minimumY = -adjustedContentInset.top
-        let maximumY = max(
-            minimumY,
-            contentSize.height - bounds.height + adjustedContentInset.bottom
-        )
-        guard maximumY > minimumY + 1 else { return false }
+/// Each game/chat message is one native table row and therefore one VoiceOver
+/// element. New messages are inserted as new rows; existing rows are never
+/// rebuilt merely because the log grew.
+private final class GameMessageCell: UITableViewCell {
+    static let reuseIdentifier = "GameMessageCell"
 
-        let visibleHeight = max(1, bounds.height - adjustedContentInset.top - adjustedContentInset.bottom)
-        let pageStep = max(44, visibleHeight * 0.85)
+    private let messageLabel = UILabel()
 
-        let targetY: CGFloat
-        switch direction {
-        case .up, .next:
-            targetY = min(maximumY, contentOffset.y + pageStep)
-        case .down, .previous:
-            targetY = max(minimumY, contentOffset.y - pageStep)
-        default:
-            return super.accessibilityScroll(direction)
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+
+        selectionStyle = .none
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
+
+        messageLabel.translatesAutoresizingMaskIntoConstraints = false
+        messageLabel.numberOfLines = 0
+        messageLabel.adjustsFontForContentSizeCategory = true
+        messageLabel.lineBreakMode = .byWordWrapping
+        contentView.addSubview(messageLabel)
+
+        NSLayoutConstraint.activate([
+            messageLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            messageLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            messageLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            messageLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4)
+        ])
+
+        // Treat one message as one VoiceOver item. The visible label remains the
+        // source text, but the cell owns the accessibility element so wrapped
+        // visual lines never fragment one logical message.
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
+        messageLabel.isAccessibilityElement = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        messageLabel.text = nil
+        contentView.backgroundColor = .clear
+        accessibilityLabel = nil
+    }
+
+    func configure(message: GameRoomMessage) {
+        messageLabel.text = message.text
+        accessibilityLabel = message.text
+
+        switch message.kind {
+        case .standard:
+            messageLabel.font = UIFont.preferredFont(forTextStyle: .body)
+            messageLabel.textColor = .label
+            contentView.backgroundColor = .clear
+
+        case .chat:
+            // Chat should stand out immediately for low-vision users without
+            // changing the spoken/message text itself.
+            messageLabel.font = UIFont.preferredFont(forTextStyle: .headline)
+            messageLabel.textColor = .black
+            contentView.backgroundColor = .systemYellow
         }
+    }
 
-        guard abs(targetY - contentOffset.y) > 1 else { return false }
-        setContentOffset(CGPoint(x: contentOffset.x, y: targetY), animated: false)
-        UIAccessibility.post(notification: .pageScrolled, argument: nil)
-        return true
+    func configurePlaceholder() {
+        messageLabel.text = "게임 메시지가 없습니다."
+        messageLabel.font = UIFont.preferredFont(forTextStyle: .body)
+        messageLabel.textColor = .secondaryLabel
+        contentView.backgroundColor = .clear
+        accessibilityLabel = "게임 메시지가 없습니다."
     }
 }
 
 struct GameMessageLogView: UIViewRepresentable {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
     let messages: [GameRoomMessage]
 
-    final class Coordinator {
-        var renderedMessages: [GameRoomMessage] = []
-        var renderedDynamicTypeSize: DynamicTypeSize?
+    final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate {
+        var messages: [GameRoomMessage] = []
+
+        func numberOfSections(in tableView: UITableView) -> Int {
+            1
+        }
+
+        func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+            max(messages.count, 1)
+        }
+
+        func tableView(
+            _ tableView: UITableView,
+            cellForRowAt indexPath: IndexPath
+        ) -> UITableViewCell {
+            guard let cell = tableView.dequeueReusableCell(
+                withIdentifier: GameMessageCell.reuseIdentifier,
+                for: indexPath
+            ) as? GameMessageCell else {
+                return UITableViewCell(style: .default, reuseIdentifier: nil)
+            }
+
+            if messages.isEmpty {
+                cell.configurePlaceholder()
+            } else {
+                cell.configure(message: messages[indexPath.row])
+            }
+            return cell
+        }
+
+        func tableView(
+            _ tableView: UITableView,
+            shouldHighlightRowAt indexPath: IndexPath
+        ) -> Bool {
+            false
+        }
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
-    func makeUIView(context: Context) -> UITextView {
-        let view = GameMessageTextView()
-        view.isEditable = false
-        view.isSelectable = true
-        view.backgroundColor = .clear
-        view.font = UIFont.preferredFont(forTextStyle: .body)
-        view.adjustsFontForContentSizeCategory = true
-        view.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        view.textContainer.lineFragmentPadding = 0
+    func makeUIView(context: Context) -> UITableView {
+        let tableView = UITableView(frame: .zero, style: .plain)
+        tableView.register(GameMessageCell.self, forCellReuseIdentifier: GameMessageCell.reuseIdentifier)
+        tableView.dataSource = context.coordinator
+        tableView.delegate = context.coordinator
+        tableView.backgroundColor = .clear
+        tableView.separatorStyle = .none
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 44
+        tableView.allowsSelection = false
+        tableView.alwaysBounceVertical = false
+        tableView.showsVerticalScrollIndicator = true
+        tableView.accessibilityContainerType = .list
 
-        replaceAll(messages: messages, in: view)
-        context.coordinator.renderedMessages = messages
-        context.coordinator.renderedDynamicTypeSize = dynamicTypeSize
-        return view
+        context.coordinator.messages = messages
+        tableView.reloadData()
+        return tableView
     }
 
-    func updateUIView(_ uiView: UITextView, context: Context) {
+    func updateUIView(_ tableView: UITableView, context: Context) {
         let coordinator = context.coordinator
+        let previous = coordinator.messages
+        guard previous != messages else { return }
 
-        // Dynamic Type changes are rare document-wide presentation changes.
-        // Rebuilding here is intentional so already-rendered standard/chat rows
-        // receive their new preferred fonts. Normal message arrival never uses
-        // this path.
-        if coordinator.renderedDynamicTypeSize != dynamicTypeSize {
-            replaceAll(messages: messages, in: uiView)
-            coordinator.renderedMessages = messages
-            coordinator.renderedDynamicTypeSize = dynamicTypeSize
+        // Placeholder transitions and any real replacement/reset are document
+        // changes, not appends. Reloading is appropriate for those rare cases.
+        guard !previous.isEmpty,
+              !messages.isEmpty,
+              messages.count >= previous.count,
+              messages.starts(with: previous) else {
+            coordinator.messages = messages
+            tableView.reloadData()
             return
         }
 
-        guard messages != coordinator.renderedMessages else { return }
+        let newCount = messages.count - previous.count
+        guard newCount > 0 else { return }
 
-        // Empty <-> non-empty transitions replace the placeholder/document once.
-        if messages.isEmpty || coordinator.renderedMessages.isEmpty {
-            replaceAll(messages: messages, in: uiView)
-            coordinator.renderedMessages = messages
-            return
+        let insertedRows = (previous.count..<messages.count).map {
+            IndexPath(row: $0, section: 0)
         }
 
-        // Normal live-log growth: preserve the existing UITextView document and
-        // insert only the newly-arrived suffix through UITextInput. This avoids
-        // both whole-document assignment and direct NSTextStorage mutation.
-        if messages.count >= coordinator.renderedMessages.count,
-           messages.starts(with: coordinator.renderedMessages) {
-            let newMessages = messages.dropFirst(coordinator.renderedMessages.count)
-            for message in newMessages {
-                guard append(message, to: uiView) else { return }
-                coordinator.renderedMessages.append(message)
-            }
-            return
+        // Update the data source first, then insert only the new rows. Existing
+        // visible rows, VoiceOver elements, scroll position, and focus stay intact.
+        coordinator.messages = messages
+        tableView.performBatchUpdates {
+            tableView.insertRows(at: insertedRows, with: .none)
         }
-
-        // A non-prefix change means the room log itself was replaced/corrected,
-        // not appended. A full document replacement is appropriate in that case.
-        replaceAll(messages: messages, in: uiView)
-        coordinator.renderedMessages = messages
-    }
-
-    private func replaceAll(messages: [GameRoomMessage], in view: UITextView) {
-        guard !messages.isEmpty else {
-            view.attributedText = NSAttributedString(
-                string: "게임 메시지가 없습니다.",
-                attributes: placeholderAttributes()
-            )
-            return
-        }
-
-        let document = NSMutableAttributedString(string: "")
-        for (index, message) in messages.enumerated() {
-            if index > 0 {
-                document.append(NSAttributedString(string: "\n", attributes: attributes(for: message.kind)))
-            }
-            document.append(NSAttributedString(string: message.text, attributes: attributes(for: message.kind)))
-        }
-        view.attributedText = document
-    }
-
-    /// Appends new rows through UITextView's UITextInput document API.
-    ///
-    /// Do not replace this with direct textStorage mutation: that bypasses the
-    /// UITextView layer that tracks text positions, selection, and input-system
-    /// changes used by accessibility.
-    private func append(_ message: GameRoomMessage, to view: UITextView) -> Bool {
-        let suffix = "\n" + message.text
-        let previousTypingAttributes = view.typingAttributes
-        view.typingAttributes = attributes(for: message.kind)
-        defer { view.typingAttributes = previousTypingAttributes }
-
-        let end = view.endOfDocument
-        guard let insertionRange = view.textRange(from: end, to: end) else {
-            return false
-        }
-
-        let oldUTF16Length = view.text.utf16.count
-        view.replace(insertionRange, withText: suffix)
-
-        // Only advance the rendered-message cursor after UITextView confirms
-        // that its own document changed. This prevents a failed insertion
-        // from silently marking a message as already rendered.
-        return view.text.utf16.count == oldUTF16Length + suffix.utf16.count
-            && view.text.hasSuffix(suffix)
-    }
-
-    private func attributes(for kind: GameRoomMessage.Kind) -> [NSAttributedString.Key: Any] {
-        switch kind {
-        case .standard:
-            return [
-                .font: UIFont.preferredFont(forTextStyle: .body),
-                .foregroundColor: UIColor.label
-            ]
-
-        case .chat:
-            // Chat is intentionally conspicuous for low-vision users. The text
-            // itself is unchanged, so VoiceOver/TTS semantics remain identical.
-            return [
-                .font: UIFont.preferredFont(forTextStyle: .headline),
-                .foregroundColor: UIColor.black,
-                .backgroundColor: UIColor.systemYellow
-            ]
-        }
-    }
-
-    private func placeholderAttributes() -> [NSAttributedString.Key: Any] {
-        [
-            .font: UIFont.preferredFont(forTextStyle: .body),
-            .foregroundColor: UIColor.secondaryLabel
-        ]
     }
 }
