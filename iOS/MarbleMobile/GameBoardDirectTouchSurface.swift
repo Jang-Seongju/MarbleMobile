@@ -7,7 +7,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     let accessibilityLabel: String
     let accessibilityValue: String
     let accessibilityHint: String
-    let accessibilityFocusRequest: Int
     let onMoveLeft: () -> Void
     let onMoveRight: () -> Void
     let onMoveUp: () -> Void
@@ -85,7 +84,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         playerInfoTap.numberOfTapsRequired = 2
         view.addGestureRecognizer(playerInfoTap)
 
-        context.coordinator.applyAccessibilityFocusRequest(to: view)
         return view
     }
 
@@ -95,7 +93,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         uiView.accessibilityValue = accessibilityValue
         uiView.accessibilityHint = accessibilityHint
         uiView.callbacks = context.coordinator.callbacks
-        context.coordinator.applyAccessibilityFocusRequest(to: uiView)
     }
 
     private func addSwipe(
@@ -117,7 +114,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
 
         var parent: GameBoardDirectTouchSurface
         private var twoFingerWinner: TwoFingerWinner?
-        private var lastAccessibilityFocusRequest = 0
         private let rotorThreshold: CGFloat = .pi / 10
 
         init(parent: GameBoardDirectTouchSurface) {
@@ -126,16 +122,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
 
         var callbacks: DirectTouchBoardView.Callbacks {
             .init(onMagicTap: parent.onMagicTap, onEscape: parent.onEscape)
-        }
-
-        func applyAccessibilityFocusRequest(to view: DirectTouchBoardView) {
-            let request = parent.accessibilityFocusRequest
-            guard request > 0, request != lastAccessibilityFocusRequest else { return }
-            lastAccessibilityFocusRequest = request
-            DispatchQueue.main.async { [weak view] in
-                guard let view else { return }
-                UIAccessibility.post(notification: .layoutChanged, argument: view)
-            }
         }
 
         @objc func moveLeft() { parent.onMoveLeft() }

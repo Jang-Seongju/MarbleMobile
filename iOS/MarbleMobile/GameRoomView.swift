@@ -11,7 +11,6 @@ struct GameRoomView: View {
     @AccessibilityFocusState private var teamNameAccessibilityFocus: Bool
     @AccessibilityFocusState private var directTouchExitAccessibilityFocus: Bool
     @AccessibilityFocusState private var returnToInteractionAccessibilityFocus: Bool
-    @State private var boardAccessibilityFocusRequest = 0
 
     var body: some View {
         NavigationStack {
@@ -34,7 +33,6 @@ struct GameRoomView: View {
                     directTouchAvailable: isInteractionBoardInspectionActive
                         ? model.isBoardReady
                         : model.isBoardDirectTouchAreaAvailable,
-                    accessibilityFocusRequest: boardAccessibilityFocusRequest,
                     directTouchHint: isInteractionBoardInspectionActive
                         ? "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다."
                         : "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환합니다.",
@@ -109,10 +107,6 @@ struct GameRoomView: View {
                     DispatchQueue.main.async { teamNameAccessibilityFocus = true }
                 }
             }
-            .onChange(of: model.hasJoinedTeam) { wasJoined, isJoined in
-                guard !wasJoined, isJoined else { return }
-                DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
-            }
             .sheet(item: $model.aiSelectionRequest) { request in
                 AIPlayerSelectionSheet(request: request)
                     .environmentObject(model)
@@ -141,9 +135,8 @@ struct GameRoomView: View {
 
     private func interactionSheetDidDismiss() {
         if isInteractionBoardInspectionActive {
-            // Wait for the real sheet-dismiss boundary before moving VoiceOver to the
-            // already existing game-board Direct Touch surface. No timing guess is needed.
-            DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
+            // Diagnostic comparison: do not force VoiceOver back onto the board when
+            // the inspection sheet disappears. The Direct Touch surface itself remains.
             return
         }
 
@@ -361,7 +354,6 @@ struct GameBoardShell: View {
     let cursorIndex: Int
     let currentCellDescription: String
     let directTouchAvailable: Bool
-    let accessibilityFocusRequest: Int
     let directTouchHint: String
     let onExitDirectTouchOverride: (() -> Void)?
     let onMoveLeft: () -> Void
@@ -409,7 +401,6 @@ struct GameBoardShell: View {
                         accessibilityLabel: "게임 보드",
                         accessibilityValue: currentCellDescription,
                         accessibilityHint: directTouchHint,
-                        accessibilityFocusRequest: accessibilityFocusRequest,
                         onMoveLeft: onMoveLeft,
                         onMoveRight: onMoveRight,
                         onMoveUp: onMoveUp,
