@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-textkit2-diagnostic1")
+        record("RESET build=textview-textkit2-setattr-compare1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-textkit2-diagnostic1",
+            "build=textview-textkit2-setattr-compare1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -154,9 +154,9 @@ private final class GameMessageTextView: UITextView {
 
 /// Read-only continuous game-message document.
 ///
-/// The TextKit 2 backing document is kept stable. Normal message growth appends
-/// only the new attributed suffix inside an NSTextContentStorage edit transaction;
-/// the existing document is not rebuilt.
+/// A/B comparison build: normal message growth rebuilds the full attributed
+/// document with setAttributedString() inside the same TextKit 2
+/// NSTextContentStorage editing transaction used by the append diagnostic build.
 struct GameMessageLogView: UIViewRepresentable {
     let messages: [GameRoomMessage]
 
@@ -262,19 +262,27 @@ struct GameMessageLogView: UIViewRepresentable {
         )
         GameMessageDiagnosticLog.shared.snapshot(textView, label: "update BEFORE")
 
-        // A normal game/chat update grows the existing document. Placeholder
-        // transitions, room reset, or any non-prefix replacement are true document
-        // replacements and intentionally take the rare full-rebuild path.
+        // A/B comparison against the append diagnostic build: keep the same
+        // UITextView, TextKit 2 content storage, transaction boundary, styling,
+        // diagnostics, and message model, but replace the whole attributed
+        // document for every normal prefix-growth update.
         if !previous.isEmpty,
            !messages.isEmpty,
            messages.count >= previous.count,
            messages.starts(with: previous) {
-            let newMessages = Array(messages.dropFirst(previous.count))
-            guard !newMessages.isEmpty else { return }
-            if append(newMessages, to: textView, existingMessageCount: previous.count) {
+            let newMessageCount = messages.count - previous.count
+            guard newMessageCount > 0 else { return }
+            if replaceWholeDocument(
+                in: textView,
+                with: messages,
+                reason: "prefix-setAttributedString-compare new=\(newMessageCount)"
+            ) {
                 context.coordinator.renderedMessages = messages
             }
-            schedulePostMutationSnapshots(textView, label: "append new=\(newMessages.count)")
+            schedulePostMutationSnapshots(
+                textView,
+                label: "setAttributedStringCompare new=\(newMessageCount)"
+            )
             return
         }
 
