@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-textkit2-setattr-compare1")
+        record("RESET build=textview-reading-page-scroll1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-textkit2-setattr-compare1",
+            "build=textview-reading-page-scroll1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -107,7 +107,12 @@ final class GameMessageDiagnosticLog {
     }
 }
 
-private final class GameMessageTextView: UITextView {
+private final class GameMessageTextView: UITextView, UIAccessibilityReadingContent {
+    private struct ReadingLine {
+        let content: String
+        let frameInContentCoordinates: CGRect
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         GameMessageDiagnosticLog.shared.snapshot(self, label: "didMoveToWindow")
@@ -123,21 +128,133 @@ private final class GameMessageTextView: UITextView {
         GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=lost")
     }
 
-    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
-        let name: String
-        switch direction {
-        case .up: name = "up"
-        case .down: name = "down"
-        case .left: name = "left"
-        case .right: name = "right"
-        case .next: name = "next"
-        case .previous: name = "previous"
-        @unknown default: name = "unknown"
+    // MARK: - UIAccessibilityReadingContent
+
+    func accessibilityLineNumber(for point: CGPoint) -> Int {
+        let lines = readingLines()
+        guard !lines.isEmpty else { return NSNotFound }
+
+        for (index, line) in lines.enumerated() {
+            let screenFrame = UIAccessibility.convertToScreenCoordinates(
+                line.frameInContentCoordinates.insetBy(dx: -2, dy: -1),
+                in: self
+            )
+            if screenFrame.contains(point) {
+                return index
+            }
         }
 
+        // VoiceOver may ask with a point that is horizontally outside the
+        // typographic rect but vertically aligned with a readable line. Use the
+        // nearest line on the same page instead of collapsing back to line 0.
+        let nearest = lines.enumerated().min { lhs, rhs in
+            let lhsFrame = UIAccessibility.convertToScreenCoordinates(lhs.element.frameInContentCoordinates, in: self)
+            let rhsFrame = UIAccessibility.convertToScreenCoordinates(rhs.element.frameInContentCoordinates, in: self)
+            return abs(lhsFrame.midY - point.y) < abs(rhsFrame.midY - point.y)
+        }
+        return nearest?.offset ?? NSNotFound
+    }
+
+    func accessibilityContent(forLineNumber lineNumber: Int) -> String? {
+        let lines = readingLines()
+        guard lines.indices.contains(lineNumber) else { return nil }
+        return lines[lineNumber].content
+    }
+
+    func accessibilityFrame(forLineNumber lineNumber: Int) -> CGRect {
+        let lines = readingLines()
+        guard lines.indices.contains(lineNumber) else { return .zero }
+        return UIAccessibility.convertToScreenCoordinates(
+            lines[lineNumber].frameInContentCoordinates,
+            in: self
+        )
+    }
+
+    func accessibilityPageContent() -> String? {
+        let lines = readingLines()
+        guard !lines.isEmpty else { return text }
+
+        let visibleRect = CGRect(origin: contentOffset, size: bounds.size)
+        let visibleLines = lines.filter { $0.frameInContentCoordinates.intersects(visibleRect) }
+        let pageLines = visibleLines.isEmpty ? lines : visibleLines
+        return pageLines.map(\.content).joined(separator: "\n")
+    }
+
+    // MARK: - VoiceOver page scrolling
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        let name = accessibilityScrollDirectionName(direction)
         GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll BEFORE direction=\(name)")
-        let result = super.accessibilityScroll(direction)
-        GameMessageDiagnosticLog.shared.record("ACCESSIBILITY_SCROLL direction=\(name) superResult=\(result)")
+
+        let deltaSign: CGFloat
+        switch direction {
+        case .down, .next:
+            deltaSign = 1
+        case .up, .previous:
+            deltaSign = -1
+        default:
+            GameMessageDiagnosticLog.shared.record(
+                "ACCESSIBILITY_SCROLL direction=\(name) handled=false unsupported=true"
+            )
+            return false
+        }
+
+        let topInset = adjustedContentInset.top
+        let bottomInset = adjustedContentInset.bottom
+        let minimumY = -topInset
+        let maximumY = max(minimumY, contentSize.height - bounds.height + bottomInset)
+        let pageHeight = max(1, bounds.height - topInset - bottomInset)
+        let proposedY = contentOffset.y + (pageHeight * deltaSign)
+        let targetY = min(maximumY, max(minimumY, proposedY))
+
+        guard abs(targetY - contentOffset.y) > 0.5 else {
+            let status = pageStatusString(offsetY: contentOffset.y, pageHeight: pageHeight, minimumY: minimumY)
+            UIAccessibility.post(notification: .pageScrolled, argument: status)
+            GameMessageDiagnosticLog.shared.record(
+                String(
+                    format: "ACCESSIBILITY_SCROLL direction=%@ handled=false boundary=true offsetY=%.1f minY=%.1f maxY=%.1f pageHeight=%.1f status=%@",
+                    name,
+                    contentOffset.y,
+                    minimumY,
+                    maximumY,
+                    pageHeight,
+                    status
+                )
+            )
+            return false
+        }
+
+        // Do not delegate to UIScrollView's VoiceOver implementation here.
+        // The diagnostic builds proved that the native path can move the
+        // viewport and then restore it to the stale selection at document
+        // offset 0. Move exactly one viewport ourselves and anchor the text
+        // selection inside the new visible page before notifying VoiceOver.
+        UIView.performWithoutAnimation {
+            setContentOffset(CGPoint(x: contentOffset.x, y: targetY), animated: false)
+            anchorSelectionToVisiblePageStart()
+            // selectedRange changes can ask UITextView to reveal the caret.
+            // Reassert the exact page offset so selection anchoring never turns
+            // into an app-owned auto-scroll.
+            setContentOffset(CGPoint(x: contentOffset.x, y: targetY), animated: false)
+            layoutIfNeeded()
+        }
+
+        let status = pageStatusString(offsetY: targetY, pageHeight: pageHeight, minimumY: minimumY)
+        UIAccessibility.post(notification: .pageScrolled, argument: status)
+
+        GameMessageDiagnosticLog.shared.record(
+            String(
+                format: "ACCESSIBILITY_SCROLL direction=%@ handled=true targetY=%.1f minY=%.1f maxY=%.1f pageHeight=%.1f selected={%d,%d} status=%@",
+                name,
+                targetY,
+                minimumY,
+                maximumY,
+                pageHeight,
+                selectedRange.location,
+                selectedRange.length,
+                status
+            )
+        )
         GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll AFTER direction=\(name)")
 
         DispatchQueue.main.async { [weak self] in
@@ -148,15 +265,105 @@ private final class GameMessageTextView: UITextView {
             guard let self else { return }
             GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll +250ms direction=\(name)")
         }
-        return result
+        return true
+    }
+
+    private func readingLines() -> [ReadingLine] {
+        guard let textLayoutManager else { return fallbackReadingLines() }
+
+        textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+        var lines: [ReadingLine] = []
+
+        textLayoutManager.enumerateTextLayoutFragments(
+            from: textLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { [weak self] layoutFragment in
+            guard let self else { return false }
+            let fragmentOrigin = layoutFragment.layoutFragmentFrame.origin
+
+            for lineFragment in layoutFragment.textLineFragments {
+                let source = lineFragment.attributedString.string as NSString
+                let sourceRange = lineFragment.characterRange
+                let rawContent: String
+                if sourceRange.location != NSNotFound, NSMaxRange(sourceRange) <= source.length {
+                    rawContent = source.substring(with: sourceRange)
+                } else {
+                    rawContent = lineFragment.attributedString.string
+                }
+                let content = rawContent.trimmingCharacters(in: .newlines)
+                guard !content.isEmpty else { continue }
+
+                let frame = lineFragment.typographicBounds.offsetBy(
+                    dx: fragmentOrigin.x + textContainerInset.left,
+                    dy: fragmentOrigin.y + textContainerInset.top
+                )
+                lines.append(
+                    ReadingLine(
+                        content: content,
+                        frameInContentCoordinates: frame
+                    )
+                )
+            }
+            return true
+        }
+
+        return lines.isEmpty ? fallbackReadingLines() : lines
+    }
+
+    private func fallbackReadingLines() -> [ReadingLine] {
+        let rawLines = (text ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+        let lineHeight = max(font?.lineHeight ?? 22, 1)
+        return rawLines.enumerated().map { index, rawLine in
+            ReadingLine(
+                content: String(rawLine),
+                frameInContentCoordinates: CGRect(
+                    x: textContainerInset.left,
+                    y: textContainerInset.top + (CGFloat(index) * lineHeight),
+                    width: max(1, bounds.width - textContainerInset.left - textContainerInset.right),
+                    height: lineHeight
+                )
+            )
+        }
+    }
+
+    private func anchorSelectionToVisiblePageStart() {
+        let probe = CGPoint(
+            x: bounds.minX + textContainerInset.left + 1,
+            y: bounds.minY + textContainerInset.top + 1
+        )
+        guard let position = closestPosition(to: probe) else { return }
+
+        let characterOffset = offset(from: beginningOfDocument, to: position)
+        guard characterOffset >= 0 else { return }
+        let boundedOffset = min(characterOffset, textStorage.length)
+        selectedRange = NSRange(location: boundedOffset, length: 0)
+    }
+
+    private func pageStatusString(offsetY: CGFloat, pageHeight: CGFloat, minimumY: CGFloat) -> String {
+        let totalHeight = max(bounds.height, contentSize.height + adjustedContentInset.top + adjustedContentInset.bottom)
+        let pageCount = max(1, Int(ceil(totalHeight / pageHeight)))
+        let normalizedOffset = max(0, offsetY - minimumY)
+        let pageIndex = min(pageCount, max(1, Int(round(normalizedOffset / pageHeight)) + 1))
+        return "전체 \(pageCount)페이지 중 \(pageIndex)페이지"
+    }
+
+    private func accessibilityScrollDirectionName(_ direction: UIAccessibilityScrollDirection) -> String {
+        switch direction {
+        case .up: return "up"
+        case .down: return "down"
+        case .left: return "left"
+        case .right: return "right"
+        case .next: return "next"
+        case .previous: return "previous"
+        @unknown default: return "unknown"
+        }
     }
 }
-
 /// Read-only continuous game-message document.
 ///
-/// A/B comparison build: normal message growth rebuilds the full attributed
-/// document with setAttributedString() inside the same TextKit 2
-/// NSTextContentStorage editing transaction used by the append diagnostic build.
+/// Normal growth uses the TextKit 2 backing store incrementally. VoiceOver
+/// receives explicit reading-content geometry plus deterministic one-viewport
+/// page scrolling so UIKit cannot snap the message document back to line 0.
 struct GameMessageLogView: UIViewRepresentable {
     let messages: [GameRoomMessage]
 
@@ -238,6 +445,7 @@ struct GameMessageLogView: UIViewRepresentable {
         textView.textContainer.lineFragmentPadding = 0
         textView.alwaysBounceVertical = false
         textView.showsVerticalScrollIndicator = true
+        textView.accessibilityTraits.insert(.causesPageTurn)
 
         context.coordinator.observe(textView)
         GameMessageDiagnosticLog.shared.attach(textView)
@@ -262,27 +470,19 @@ struct GameMessageLogView: UIViewRepresentable {
         )
         GameMessageDiagnosticLog.shared.snapshot(textView, label: "update BEFORE")
 
-        // A/B comparison against the append diagnostic build: keep the same
-        // UITextView, TextKit 2 content storage, transaction boundary, styling,
-        // diagnostics, and message model, but replace the whole attributed
-        // document for every normal prefix-growth update.
+        // Normal live-log growth is incremental. The previous comparison build
+        // proved that rebuilding the full attributed document does not change
+        // the VoiceOver failure, so keep the efficient TextKit 2 append path.
         if !previous.isEmpty,
            !messages.isEmpty,
            messages.count >= previous.count,
            messages.starts(with: previous) {
-            let newMessageCount = messages.count - previous.count
-            guard newMessageCount > 0 else { return }
-            if replaceWholeDocument(
-                in: textView,
-                with: messages,
-                reason: "prefix-setAttributedString-compare new=\(newMessageCount)"
-            ) {
+            let newMessages = Array(messages.dropFirst(previous.count))
+            guard !newMessages.isEmpty else { return }
+            if append(newMessages, to: textView, existingMessageCount: previous.count) {
                 context.coordinator.renderedMessages = messages
             }
-            schedulePostMutationSnapshots(
-                textView,
-                label: "setAttributedStringCompare new=\(newMessageCount)"
-            )
+            schedulePostMutationSnapshots(textView, label: "append new=\(newMessages.count)")
             return
         }
 
