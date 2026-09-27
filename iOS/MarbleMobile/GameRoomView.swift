@@ -341,7 +341,7 @@ struct GameRoomView: View {
 }
 
 struct GameBoardShell: View {
-    let messages: [String]
+    let messages: [GameRoomMessage]
     let catalog: BoardCatalogSnapshot?
     let cursorIndex: Int
     let currentCellDescription: String

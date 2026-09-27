@@ -16,6 +16,24 @@ struct SocialConfirmation: Identifiable {
     let message: String
 }
 
+struct GameRoomMessage: Equatable {
+    enum Kind: Equatable {
+        case standard
+        case chat
+    }
+
+    let text: String
+    let kind: Kind
+
+    static func standard(_ text: String) -> GameRoomMessage {
+        GameRoomMessage(text: text, kind: .standard)
+    }
+
+    static func chat(_ text: String) -> GameRoomMessage {
+        GameRoomMessage(text: text, kind: .chat)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen { case login, lobby, gameRoom }
@@ -43,7 +61,7 @@ final class AppModel: ObservableObject {
     @Published var roomJoinErrorMessage: String?
     @Published var roomEntry: RoomEntrySnapshot?
     @Published var roomUpdate: RoomUpdateSnapshot?
-    @Published var roomMessages: [String] = []
+    @Published var roomMessages: [GameRoomMessage] = []
     @Published var boardCatalog: BoardCatalogSnapshot?
     @Published var staticInformationCatalog: StaticInformationCatalogSnapshot?
     @Published var boardCursor = BoardCursorState()
@@ -119,7 +137,7 @@ final class AppModel: ObservableObject {
         self.audio = audio
         self.output = IOSOutputOrchestrator(audio: audio)
         self.turnDeadlineWarning = TurnDeadlineWarningController(audio: audio)
-        output.noticeSink = { [weak self] message in self?.roomMessages.append(message) }
+        output.noticeSink = { [weak self] message in self?.roomMessages.append(.standard(message)) }
         socket.onMessage = { [weak self] in self?.handleSocketMessage($0) }
         socket.onDisconnected = { [weak self] message in self?.handleDisconnect(message) }
     }
@@ -1046,7 +1064,7 @@ final class AppModel: ObservableObject {
         guard let message else { return }
         // client(393)는 플레이 순서 구조화 이벤트를 출력 큐와 별개로
         // 메시지 창에 항상 기록한다. Voice/TTS는 아래 plan이 담당한다.
-        roomMessages.append(message)
+        roomMessages.append(.standard(message))
         switch event {
         case "preparing":
             output.emit(PresentationPlan(
@@ -1727,7 +1745,7 @@ final class AppModel: ObservableObject {
             handleRoomUpdate(data)
         case "room_event":
             if let message = RoomEventFormatter.message(from: data) {
-                roomMessages.append(message)
+                roomMessages.append(.standard(message))
                 let clip = roomSoundClip(for: data["sound_event"] as? String)
                 if let clip {
                     output.emit(PresentationPlan(
@@ -1752,7 +1770,7 @@ final class AppModel: ObservableObject {
             }
         case "room_chat":
             if let chat = try? RoomChatParser.parse(data) {
-                roomMessages.append("\(chat.fromNickname): \(chat.message)")
+                roomMessages.append(.chat("\(chat.fromNickname): \(chat.message)"))
                 output.emit(PresentationPlan(
                     root: .parallel([
                         .sfx(clip: "chat.wav", completion: .startOnly),
