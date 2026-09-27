@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-append-focus-off2")
+        record("RESET build=textview-append-public-setter-refresh1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-append-focus-off2",
+            "build=textview-append-public-setter-refresh1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -470,9 +470,9 @@ struct GameMessageLogView: UIViewRepresentable {
         )
         GameMessageDiagnosticLog.shared.snapshot(textView, label: "update BEFORE")
 
-        // Controlled comparison against textview-public-attributedtext-compare1:
-        // restore true incremental TextKit 2 backing-store append for normal prefix
-        // growth. Initial/reset/non-prefix changes remain real document replacements.
+        // Controlled public-setter refresh test: keep true incremental TextKit 2
+        // backing-store append for normal prefix growth, then pass that exact final
+        // attributed document through UITextView.attributedText once.
         if !previous.isEmpty,
            !messages.isEmpty,
            messages.count >= previous.count,
@@ -539,6 +539,21 @@ struct GameMessageLogView: UIViewRepresentable {
             + "backing=\(backingLength) storage=\(textStorageLength) text=\(textLength) "
             + "suffixMatches=\(suffixMatches) transactionAfter=\(contentStorage.hasEditingTransaction) success=\(success)"
         )
+
+        if success {
+            let publicSetterDocument = NSAttributedString(attributedString: backingStore)
+            GameMessageDiagnosticLog.shared.record(
+                "PUBLIC_SETTER_REFRESH BEGIN view=\(ObjectIdentifier(textView)) length=\(publicSetterDocument.length)"
+            )
+            textView.attributedText = publicSetterDocument
+            let refreshedLength = textView.attributedText.length
+            let refreshedMatches = textView.attributedText.string == publicSetterDocument.string
+            GameMessageDiagnosticLog.shared.record(
+                "PUBLIC_SETTER_REFRESH END view=\(ObjectIdentifier(textView)) length=\(refreshedLength) "
+                + "matches=\(refreshedMatches) selected={\(textView.selectedRange.location),\(textView.selectedRange.length)}"
+            )
+        }
+
         GameMessageDiagnosticLog.shared.snapshot(textView, label: "append IMMEDIATE")
         return success
     }
