@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-reading-page-scroll1")
+        record("RESET build=textview-public-attributedtext-compare1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-reading-page-scroll1",
+            "build=textview-public-attributedtext-compare1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -470,19 +470,29 @@ struct GameMessageLogView: UIViewRepresentable {
         )
         GameMessageDiagnosticLog.shared.snapshot(textView, label: "update BEFORE")
 
-        // Normal live-log growth is incremental. The previous comparison build
-        // proved that rebuilding the full attributed document does not change
-        // the VoiceOver failure, so keep the efficient TextKit 2 append path.
+        // A/B comparison against the incremental TextKit 2 backing-store path.
+        // Keep the same UITextView, TextKit 2 configuration, styling, reading-content
+        // implementation, page scrolling, and diagnostics, but route normal prefix
+        // growth through UITextView's public attributedText setter. This tests whether
+        // UIKit refreshes VoiceOver's internal text-accessibility state only when the
+        // public UITextView API is used.
         if !previous.isEmpty,
            !messages.isEmpty,
            messages.count >= previous.count,
            messages.starts(with: previous) {
-            let newMessages = Array(messages.dropFirst(previous.count))
-            guard !newMessages.isEmpty else { return }
-            if append(newMessages, to: textView, existingMessageCount: previous.count) {
+            let newMessageCount = messages.count - previous.count
+            guard newMessageCount > 0 else { return }
+            if replaceViaPublicAttributedText(
+                in: textView,
+                with: messages,
+                reason: "prefix-public-attributedText new=\(newMessageCount)"
+            ) {
                 context.coordinator.renderedMessages = messages
             }
-            schedulePostMutationSnapshots(textView, label: "append new=\(newMessages.count)")
+            schedulePostMutationSnapshots(
+                textView,
+                label: "publicAttributedText new=\(newMessageCount)"
+            )
             return
         }
 
@@ -540,6 +550,59 @@ struct GameMessageLogView: UIViewRepresentable {
             + "suffixMatches=\(suffixMatches) transactionAfter=\(contentStorage.hasEditingTransaction) success=\(success)"
         )
         GameMessageDiagnosticLog.shared.snapshot(textView, label: "append IMMEDIATE")
+        return success
+    }
+
+    private func replaceViaPublicAttributedText(
+        in textView: UITextView,
+        with messages: [GameRoomMessage],
+        reason: String
+    ) -> Bool {
+        let document: NSAttributedString
+        if messages.isEmpty {
+            document = NSAttributedString(
+                string: "게임 메시지가 없습니다.",
+                attributes: placeholderAttributes
+            )
+        } else {
+            document = attributedDocument(for: messages, includeLeadingSeparator: false)
+        }
+
+        let beforeContentManager = textView.textLayoutManager?.textContentManager
+        let beforeContentStorage = beforeContentManager as? NSTextContentStorage
+        let beforeBacking = beforeContentStorage?.attributedString
+        let beforeSameBacking = beforeBacking.map { ($0 as AnyObject) === textView.textStorage } ?? false
+
+        GameMessageDiagnosticLog.shared.record(
+            "PUBLIC_ATTRIBUTEDTEXT BEGIN view=\(ObjectIdentifier(textView)) reason=\(reason) messages=\(messages.count) "
+            + "oldText=\(((textView.text ?? "") as NSString).length) new=\(document.length) "
+            + "tk2=\(textView.textLayoutManager != nil) sameBackingBefore=\(beforeSameBacking)"
+        )
+
+        // Deliberately use the UITextView public API here. Do not mutate the TextKit
+        // backing store directly in this comparison path.
+        textView.attributedText = document
+
+        let afterContentManager = textView.textLayoutManager?.textContentManager
+        let afterContentStorage = afterContentManager as? NSTextContentStorage
+        let afterBacking = afterContentStorage?.attributedString
+        let afterSameBacking = afterBacking.map { ($0 as AnyObject) === textView.textStorage } ?? false
+        let textLength = ((textView.text ?? "") as NSString).length
+        let storageLength = textView.textStorage.length
+        let backingLength = afterBacking?.length ?? -1
+        let success = textLength == document.length
+            && storageLength == document.length
+            && textView.attributedText.string == document.string
+
+        GameMessageDiagnosticLog.shared.record(
+            "PUBLIC_ATTRIBUTEDTEXT END view=\(ObjectIdentifier(textView)) reason=\(reason) "
+            + "text=\(textLength) storage=\(storageLength) backing=\(backingLength) "
+            + "tk2=\(textView.textLayoutManager != nil) sameBackingAfter=\(afterSameBacking) success=\(success)"
+        )
+        GameMessageDiagnosticLog.shared.snapshot(
+            textView,
+            label: "publicAttributedText IMMEDIATE reason=\(reason)"
+        )
         return success
     }
 
