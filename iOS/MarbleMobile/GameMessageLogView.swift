@@ -554,7 +554,7 @@ struct GameMessageLogView: UIViewRepresentable {
             }
         }
 
-        func observe(_ textView: GameMessageTextView) {
+        fileprivate func observe(_ textView: GameMessageTextView) {
             contentOffsetObservation = textView.observe(
                 \.contentOffset,
                 options: [.old, .new]
