@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-vo-layout-only1")
+        record("RESET build=textview-vo-notification-isolate1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-vo-layout-only1",
+            "build=textview-vo-notification-isolate1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -657,24 +657,30 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
 
         guard abs(targetY - contentOffset.y) > 0.5 else {
             let status = pageStatusString(offsetY: contentOffset.y, pageHeight: pageHeight, minimumY: minimumY)
+            let retainedTarget = currentVoiceOverNativeElementInMessage()
+                ?? visibleNativeAccessibilityFocusTarget(directionName: "\(name)-boundary")
 
-            // The isolate1 real-device run proved that pageScrolled alone is sufficient
-            // to move VoiceOver out of the native UITextView paragraph hierarchy and
-            // onto the Direct Touch board. At a document boundary there is no viewport
-            // or focus target change to announce, so consume the supported gesture and
-            // leave the current native paragraph focus untouched.
+            // Controlled boundary arm: consume the gesture exactly as sync2 did,
+            // but post pageScrolled only. Do not post layoutChanged here. This tells
+            // us whether pageScrolled alone is sufficient to cause the transient
+            // paragraph -> nil -> DirectTouchBoardView focus excursion.
             GameMessageDiagnosticLog.shared.record(
-                "AX_NOTIFY_MODE direction=\(name) mode=none reason=boundary"
+                "AX_NOTIFY_MODE direction=\(name) mode=pageScrolled-only reason=boundary"
             )
             GameMessageDiagnosticLog.shared.record(
+                "AX_PAGE_SCROLLED_POST direction=\(name) reason=boundary status=\(status)"
+            )
+            UIAccessibility.post(notification: .pageScrolled, argument: status)
+            GameMessageDiagnosticLog.shared.record(
                 String(
-                    format: "AX_BOUNDARY_RETAIN direction=%@ handled=true offsetY=%.1f minY=%.1f maxY=%.1f pageHeight=%.1f status=%@ notificationPosted=false",
+                    format: "AX_BOUNDARY_RETAIN direction=%@ handled=true offsetY=%.1f minY=%.1f maxY=%.1f pageHeight=%.1f status=%@ target=%@ layoutChangedPosted=false",
                     name,
                     contentOffset.y,
                     minimumY,
                     maximumY,
                     pageHeight,
-                    status
+                    status,
+                    retainedTarget == nil ? "fallback-none" : "current-or-visible-native"
                 )
             )
             GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll BOUNDARY direction=\(name)")
@@ -699,14 +705,30 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
 
         let status = pageStatusString(offsetY: targetY, pageHeight: pageHeight, minimumY: minimumY)
 
-        // isolate1 proved that pageScrolled is the notification that ejects
-        // VoiceOver to the Direct Touch board. Both directions therefore use the
-        // same public native-paragraph layoutChanged hand-off that stayed stable in
-        // the down/next isolation arm. No pageScrolled notification is posted.
-        GameMessageDiagnosticLog.shared.record(
-            "AX_NOTIFY_MODE direction=\(name) mode=layoutChanged-only reason=page-move status=\(status)"
-        )
-        scheduleVoiceOverFocus(directionName: name, reason: "page-move-layout-only")
+        // One-build A/B isolation with no timing magic:
+        // - down / next: layoutChanged only
+        // - up / previous: pageScrolled only
+        // The viewport move, selection anchoring, target selection policy and all
+        // other diagnostics remain identical to sync2. A pageScrolled-only arm may
+        // intentionally reproduce stale-focus behavior; that is diagnostic evidence.
+        if deltaSign > 0 {
+            GameMessageDiagnosticLog.shared.record(
+                "AX_NOTIFY_MODE direction=\(name) mode=layoutChanged-only reason=page-move status=\(status)"
+            )
+            scheduleVoiceOverFocus(directionName: name, reason: "page-move-layout-only")
+        } else {
+            let diagnosticTarget = visibleNativeAccessibilityFocusTarget(
+                directionName: "\(name)-page-only-diagnostic"
+            )
+            GameMessageDiagnosticLog.shared.record(
+                "AX_NOTIFY_MODE direction=\(name) mode=pageScrolled-only reason=page-move status=\(status) "
+                + "target=\(diagnosticTarget == nil ? "none" : "visible-native-no-layout-post")"
+            )
+            GameMessageDiagnosticLog.shared.record(
+                "AX_PAGE_SCROLLED_POST direction=\(name) reason=page-move status=\(status)"
+            )
+            UIAccessibility.post(notification: .pageScrolled, argument: status)
+        }
 
         GameMessageDiagnosticLog.shared.record(
             String(
