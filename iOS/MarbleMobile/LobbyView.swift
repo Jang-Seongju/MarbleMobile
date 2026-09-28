@@ -196,17 +196,18 @@ struct LobbyView: View {
             .onChange(of: focusedRoomID) { _, value in
                 if let value { lastRoomID = value }
             }
-            .accessibilityAction(.default) {
-                if roomActionsAvailable {
-                    model.performRoomAction(.join, room: room)
-                }
-            }
             .accessibilityActions {
-                // VoiceOver의 한 손가락 아래 쓸기가 PC판 메뉴의 순방향이 되도록
-                // 등록 순서만 뒤집는다.
+                // 접속자 행과 같은 등록 규칙을 사용한다. VoiceOver의 한 손가락
+                // 아래 쓸기가 PC판 메뉴 순방향, 위 쓸기가 역방향이 되도록
+                // custom action 등록 순서만 뒤집는다.
                 ForEach(actions.reversed()) { action in
                     Button(action.title) { model.performRoomAction(action.kind, room: room) }
                         .disabled(!action.isEnabled)
+                }
+            }
+            .accessibilityAction(.default) {
+                if roomActionsAvailable {
+                    model.performRoomAction(.join, room: room)
                 }
             }
     }
