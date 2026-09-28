@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-focus-identity1")
+        record("RESET build=textview-vo-focus-sync1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-focus-identity1",
+            "build=textview-vo-focus-sync1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -282,6 +282,110 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         return diagnosticText(String(describing: value)) ?? "empty"
     }
 
+    /// Uses only the public UIAccessibilityContainer surface to discover UIKit's
+    /// native text accessibility elements. The implementation intentionally does
+    /// not depend on UIKit's private paragraph-element class name.
+    private func visibleNativeAccessibilityFocusTarget(directionName: String) -> UIAccessibilityElement? {
+        let methodCount = accessibilityElementCount()
+        let explicitElements = accessibilityElements
+        let explicitCount = explicitElements?.count
+        let messageFrame = UIAccessibility.convertToScreenCoordinates(bounds, in: self)
+
+        var visibleCandidates: [(source: String, index: Int, element: UIAccessibilityElement)] = []
+        var seen = Set<ObjectIdentifier>()
+
+        func consider(_ candidate: Any, source: String, index: Int) {
+            guard let element = candidate as? UIAccessibilityElement else { return }
+            let identity = ObjectIdentifier(element)
+            guard seen.insert(identity).inserted else { return }
+            guard element.isAccessibilityElement else { return }
+            guard let container = element.accessibilityContainer,
+                  (container as AnyObject) === self
+            else { return }
+            let frame = element.accessibilityFrame
+            guard !frame.isNull, !frame.isInfinite, frame.intersects(messageFrame) else { return }
+            visibleCandidates.append((source, index, element))
+        }
+
+        // NSObject/UIAccessibilityContainer can report NSNotFound-like sentinel
+        // values on unsupported paths. Bound the diagnostic scan defensively.
+        if methodCount > 0, methodCount <= 4_096 {
+            for index in 0..<methodCount {
+                if let element = accessibilityElement(at: index) {
+                    consider(element, source: "method", index: index)
+                }
+            }
+        }
+
+        if let explicitElements {
+            for (index, element) in explicitElements.enumerated() {
+                consider(element, source: "array", index: index)
+            }
+        }
+
+        visibleCandidates.sort { lhs, rhs in
+            let lhsFrame = lhs.element.accessibilityFrame
+            let rhsFrame = rhs.element.accessibilityFrame
+            if abs(lhsFrame.minY - rhsFrame.minY) > 0.5 {
+                return lhsFrame.minY < rhsFrame.minY
+            }
+            return lhsFrame.minX < rhsFrame.minX
+        }
+
+        GameMessageDiagnosticLog.shared.record(
+            "AX_CONTAINER_ENUM direction=\(directionName) methodCount=\(methodCount) "
+            + "arrayCount=\(explicitCount.map(String.init) ?? "nil") "
+            + "visibleNative=\(visibleCandidates.count) messageFrame=\(diagnosticRect(messageFrame))"
+        )
+
+        for candidate in visibleCandidates.prefix(8) {
+            let roundTripIndex = index(ofAccessibilityElement: candidate.element)
+            GameMessageDiagnosticLog.shared.record(
+                "AX_CONTAINER_VISIBLE direction=\(directionName) source=\(candidate.source) "
+                + "index=\(candidate.index) roundTripIndex=\(roundTripIndex) "
+                + "element=[\(diagnosticAccessibilityObject(candidate.element))]"
+            )
+        }
+
+        guard let target = visibleCandidates.first else {
+            GameMessageDiagnosticLog.shared.record(
+                "AX_FOCUS_TARGET direction=\(directionName) result=none"
+            )
+            return nil
+        }
+
+        GameMessageDiagnosticLog.shared.record(
+            "AX_FOCUS_TARGET direction=\(directionName) result=found "
+            + "source=\(target.source) index=\(target.index) "
+            + "roundTripIndex=\(index(ofAccessibilityElement: target.element)) "
+            + "element=[\(diagnosticAccessibilityObject(target.element))]"
+        )
+        return target.element
+    }
+
+    private func requestVoiceOverFocusOnVisibleNativeElement(directionName: String) {
+        guard UIAccessibility.isVoiceOverRunning else {
+            GameMessageDiagnosticLog.shared.record(
+                "AX_FOCUS_REQUEST direction=\(directionName) posted=false voiceOver=false"
+            )
+            return
+        }
+        guard let target = visibleNativeAccessibilityFocusTarget(directionName: directionName) else {
+            GameMessageDiagnosticLog.shared.record(
+                "AX_FOCUS_REQUEST direction=\(directionName) posted=false reason=no-visible-native-element"
+            )
+            return
+        }
+
+        recordCurrentVoiceOverFocus(label: "focus-request-before-\(directionName)")
+        UIAccessibility.post(notification: .layoutChanged, argument: target)
+        GameMessageDiagnosticLog.shared.record(
+            "AX_FOCUS_REQUEST direction=\(directionName) posted=true "
+            + "target=[\(diagnosticAccessibilityObject(target))]"
+        )
+        recordCurrentVoiceOverFocus(label: "focus-request-after-immediate-\(directionName)")
+    }
+
     func noteExternalAccessibilityFocus(_ element: Any?) {
         let frame: CGRect?
         if let view = element as? UIView {
@@ -502,6 +606,11 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
 
         let status = pageStatusString(offsetY: targetY, pageHeight: pageHeight, minimumY: minimumY)
         UIAccessibility.post(notification: .pageScrolled, argument: status)
+
+        // The viewport has already moved. Now ask VoiceOver to follow it by
+        // focusing the first UIKit-native accessibility element that is actually
+        // visible in the new message viewport. This uses only public APIs.
+        requestVoiceOverFocusOnVisibleNativeElement(directionName: name)
 
         GameMessageDiagnosticLog.shared.record(
             String(
