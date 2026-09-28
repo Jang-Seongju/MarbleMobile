@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-focus-retention1")
+        record("RESET build=textview-focus-identity1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-focus-retention1",
+            "build=textview-focus-identity1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -178,6 +178,108 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
             )
         )
         GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=lost")
+    }
+
+    fileprivate func recordAccessibilityFocusNotification(
+        sequence: Int,
+        focused: Any?,
+        unfocused: Any?,
+        assistiveTechnology: Any?
+    ) {
+        GameMessageDiagnosticLog.shared.record(
+            "FOCUS_NOTIFICATION seq=\(sequence) tech=\(diagnosticScalar(assistiveTechnology)) "
+            + "focused=[\(diagnosticAccessibilityObject(focused))] "
+            + "unfocused=[\(diagnosticAccessibilityObject(unfocused))]"
+        )
+    }
+
+    fileprivate func recordCurrentVoiceOverFocus(label: String, sequence: Int? = nil) {
+        let current = UIAccessibility.focusedElement(using: .notificationVoiceOver)
+        let seq = sequence.map(String.init) ?? "-"
+        GameMessageDiagnosticLog.shared.record(
+            "FOCUS_CURRENT_VO label=\(label) seq=\(seq) current=[\(diagnosticAccessibilityObject(current))] "
+            + String(format: "offsetY=%.1f", contentOffset.y)
+        )
+    }
+
+    private func diagnosticAccessibilityObject(_ element: Any?) -> String {
+        guard let element else { return "nil" }
+        let object = element as AnyObject
+        var parts: [String] = [
+            "type=\(String(reflecting: type(of: object)))",
+            "id=\(String(describing: ObjectIdentifier(object)))"
+        ]
+
+        if object === self {
+            parts.append("relation=self")
+        }
+
+        if let view = element as? UIView {
+            let frame = UIAccessibility.convertToScreenCoordinates(view.bounds, in: view)
+            parts.append("kind=UIView")
+            parts.append("relation=\(diagnosticViewRelation(view))")
+            parts.append("frame=\(diagnosticRect(frame))")
+            parts.append("isAX=\(view.isAccessibilityElement)")
+            parts.append("windowSame=\(view.window === window)")
+            if let label = diagnosticText(view.accessibilityLabel) {
+                parts.append("label=\(label)")
+            }
+            if let value = diagnosticText(view.accessibilityValue) {
+                parts.append("value=\(value)")
+            }
+        } else if let accessibilityElement = element as? UIAccessibilityElement {
+            parts.append("kind=UIAccessibilityElement")
+            parts.append("frame=\(diagnosticRect(accessibilityElement.accessibilityFrame))")
+            parts.append("isAX=\(accessibilityElement.isAccessibilityElement)")
+            if let label = diagnosticText(accessibilityElement.accessibilityLabel) {
+                parts.append("label=\(label)")
+            }
+            if let value = diagnosticText(accessibilityElement.accessibilityValue) {
+                parts.append("value=\(value)")
+            }
+            if let container = accessibilityElement.accessibilityContainer {
+                let containerObject = container as AnyObject
+                parts.append("containerType=\(String(reflecting: type(of: containerObject)))")
+                parts.append("containerId=\(String(describing: ObjectIdentifier(containerObject)))")
+                if containerObject === self {
+                    parts.append("containerRelation=self")
+                } else if let containerView = container as? UIView {
+                    parts.append("containerRelation=\(diagnosticViewRelation(containerView))")
+                }
+            } else {
+                parts.append("container=nil")
+            }
+        } else {
+            parts.append("kind=other")
+        }
+
+        return parts.joined(separator: ",")
+    }
+
+    private func diagnosticViewRelation(_ view: UIView) -> String {
+        if view === self { return "self" }
+        if view.isDescendant(of: self) { return "descendant-of-textview" }
+        if self.isDescendant(of: view) { return "ancestor-of-textview" }
+        return "outside-textview"
+    }
+
+    private func diagnosticRect(_ rect: CGRect) -> String {
+        if rect.isNull { return "null" }
+        if rect.isInfinite { return "infinite" }
+        return String(format: "{%.1f,%.1f,%.1f,%.1f}", rect.origin.x, rect.origin.y, rect.width, rect.height)
+    }
+
+    private func diagnosticText(_ text: String?) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        let compact = text
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+        return String(compact.prefix(120))
+    }
+
+    private func diagnosticScalar(_ value: Any?) -> String {
+        guard let value else { return "nil" }
+        return diagnosticText(String(describing: value)) ?? "empty"
     }
 
     func noteExternalAccessibilityFocus(_ element: Any?) {
@@ -415,14 +517,24 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
             )
         )
         GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll AFTER direction=\(name)")
+        recordCurrentVoiceOverFocus(label: "accessibilityScroll-after-\(name)")
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll NEXT_RUNLOOP direction=\(name)")
+            self.recordCurrentVoiceOverFocus(label: "accessibilityScroll-next-runloop-\(name)")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             guard let self else { return }
             GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll +250ms direction=\(name)")
+            self.recordCurrentVoiceOverFocus(label: "accessibilityScroll-250ms-\(name)")
+        }
+        for (delay, label) in [(1.0, "1s"), (2.0, "2s"), (4.0, "4s")] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll +\(label) direction=\(name)")
+                self.recordCurrentVoiceOverFocus(label: "accessibilityScroll-\(label)-\(name)")
+            }
         }
         return true
     }
@@ -544,6 +656,7 @@ struct GameMessageLogView: UIViewRepresentable {
         var contentOffsetObservation: NSKeyValueObservation?
         var contentSizeObservation: NSKeyValueObservation?
         var accessibilityFocusObservation: NSObjectProtocol?
+        private var accessibilityFocusSequence: Int = 0
         private var lastOffsetLogUptime: TimeInterval = 0
 
         deinit {
@@ -608,9 +721,22 @@ struct GameMessageLogView: UIViewRepresentable {
                 forName: UIAccessibility.elementFocusedNotification,
                 object: nil,
                 queue: .main
-            ) { [weak textView] notification in
-                guard let textView else { return }
+            ) { [weak self, weak textView] notification in
+                guard let self, let textView else { return }
+                self.accessibilityFocusSequence += 1
+                let sequence = self.accessibilityFocusSequence
                 let focused = notification.userInfo?[UIAccessibility.focusedElementUserInfoKey]
+                let unfocused = notification.userInfo?[UIAccessibility.unfocusedElementUserInfoKey]
+                let assistiveTechnology = notification.userInfo?[UIAccessibility.assistiveTechnologyUserInfoKey]
+                textView.recordAccessibilityFocusNotification(
+                    sequence: sequence,
+                    focused: focused,
+                    unfocused: unfocused,
+                    assistiveTechnology: assistiveTechnology
+                )
+                DispatchQueue.main.async { [weak textView] in
+                    textView?.recordCurrentVoiceOverFocus(label: "notification-next-runloop", sequence: sequence)
+                }
                 if let focused, (focused as AnyObject) === textView {
                     return
                 }
