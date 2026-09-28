@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-append-public-setter-refresh1")
+        record("RESET build=textview-focus-retention1")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-append-public-setter-refresh1",
+            "build=textview-focus-retention1",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -113,6 +113,20 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         let frameInContentCoordinates: CGRect
     }
 
+    private enum ExternalEntryEdge: String {
+        case top
+        case bottom
+    }
+
+    private var messageRevision: Int = 0
+    private var isMessageAccessibilityFocused = false
+    private var savedViewportOffsetY: CGFloat?
+    private var revisionWhenFocusLeft: Int?
+    private var messagesAddedWhileOutside = false
+    private var lastExternalFocusFrame: CGRect?
+    private var pendingEntryOffsetY: CGFloat?
+    private var pendingEntryEdge: ExternalEntryEdge?
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         GameMessageDiagnosticLog.shared.snapshot(self, label: "didMoveToWindow")
@@ -120,12 +134,83 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
 
     override func accessibilityElementDidBecomeFocused() {
         super.accessibilityElementDidBecomeFocused()
-        GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=became")
+        isMessageAccessibilityFocused = true
+
+        guard let targetOffsetY = reentryTargetOffsetY() else {
+            pendingEntryOffsetY = nil
+            pendingEntryEdge = nil
+            GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=became native-entry")
+            return
+        }
+
+        pendingEntryOffsetY = targetOffsetY
+        pendingEntryEdge = inferredExternalEntryEdge()
+        restoreViewportOffsetOnly(targetOffsetY)
+        GameMessageDiagnosticLog.shared.record(
+            String(
+                format: "FOCUS_REENTRY edge=%@ targetY=%.1f savedY=%@ outsideAppend=%@ revision=%d leftRevision=%@",
+                pendingEntryEdge?.rawValue ?? "pending-point",
+                targetOffsetY,
+                savedViewportOffsetY.map { String(format: "%.1f", $0) } ?? "nil",
+                messagesAddedWhileOutside.description,
+                messageRevision,
+                revisionWhenFocusLeft.map(String.init) ?? "nil"
+            )
+        )
+        messagesAddedWhileOutside = false
+        revisionWhenFocusLeft = nil
+        GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=became restored")
     }
 
     override func accessibilityElementDidLoseFocus() {
         super.accessibilityElementDidLoseFocus()
+        savedViewportOffsetY = contentOffset.y
+        revisionWhenFocusLeft = messageRevision
+        messagesAddedWhileOutside = false
+        pendingEntryOffsetY = nil
+        pendingEntryEdge = nil
+        isMessageAccessibilityFocused = false
+        GameMessageDiagnosticLog.shared.record(
+            String(
+                format: "FOCUS_LEFT savedY=%.1f revision=%d",
+                contentOffset.y,
+                messageRevision
+            )
+        )
         GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=lost")
+    }
+
+    func noteExternalAccessibilityFocus(_ element: Any?) {
+        let frame: CGRect?
+        if let view = element as? UIView {
+            frame = UIAccessibility.convertToScreenCoordinates(view.bounds, in: view)
+        } else if let accessibilityElement = element as? UIAccessibilityElement {
+            frame = accessibilityElement.accessibilityFrame
+        } else {
+            frame = nil
+        }
+
+        guard let frame, !frame.isNull, !frame.isInfinite else { return }
+        let messageFrame = UIAccessibility.convertToScreenCoordinates(bounds, in: self)
+        guard !frame.intersects(messageFrame) else { return }
+        lastExternalFocusFrame = frame
+    }
+
+    func noteMessageRevision(_ revision: Int) {
+        guard revision != messageRevision else { return }
+        let oldRevision = messageRevision
+        messageRevision = revision
+
+        if !isMessageAccessibilityFocused,
+           let revisionWhenFocusLeft,
+           revision > revisionWhenFocusLeft {
+            messagesAddedWhileOutside = true
+        }
+
+        GameMessageDiagnosticLog.shared.record(
+            "MESSAGE_REVISION old=\(oldRevision) new=\(revision) focused=\(isMessageAccessibilityFocused) "
+            + "leftRevision=\(revisionWhenFocusLeft.map(String.init) ?? "nil") outsideAppend=\(messagesAddedWhileOutside)"
+        )
     }
 
     // MARK: - UIAccessibilityReadingContent
@@ -133,6 +218,21 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
     func accessibilityLineNumber(for point: CGPoint) -> Int {
         let lines = readingLines()
         guard !lines.isEmpty else { return NSNotFound }
+
+        if let targetOffsetY = pendingEntryOffsetY {
+            let entryEdge = pendingEntryEdge ?? inferredEntryEdge(fromScreenPoint: point)
+            restoreViewport(offsetY: targetOffsetY, edge: entryEdge)
+            if let entryLineNumber = visibleBoundaryLineNumber(in: lines, edge: entryEdge) {
+                pendingEntryOffsetY = nil
+                pendingEntryEdge = nil
+                GameMessageDiagnosticLog.shared.record(
+                    "FOCUS_REENTRY_LINE edge=\(entryEdge.rawValue) line=\(entryLineNumber) content=\(lines[entryLineNumber].content)"
+                )
+                return entryLineNumber
+            }
+            pendingEntryOffsetY = nil
+            pendingEntryEdge = nil
+        }
 
         for (index, line) in lines.enumerated() {
             let screenFrame = UIAccessibility.convertToScreenCoordinates(
@@ -178,6 +278,65 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         let visibleLines = lines.filter { $0.frameInContentCoordinates.intersects(visibleRect) }
         let pageLines = visibleLines.isEmpty ? lines : visibleLines
         return pageLines.map(\.content).joined(separator: "\n")
+    }
+
+    private func reentryTargetOffsetY() -> CGFloat? {
+        guard savedViewportOffsetY != nil || messagesAddedWhileOutside else { return nil }
+
+        let topInset = adjustedContentInset.top
+        let bottomInset = adjustedContentInset.bottom
+        let minimumY = -topInset
+        let maximumY = max(minimumY, contentSize.height - bounds.height + bottomInset)
+
+        if messagesAddedWhileOutside {
+            return maximumY
+        }
+        guard let savedViewportOffsetY else { return nil }
+        return min(maximumY, max(minimumY, savedViewportOffsetY))
+    }
+
+    private func inferredExternalEntryEdge() -> ExternalEntryEdge? {
+        guard let lastExternalFocusFrame else { return nil }
+        let messageFrame = UIAccessibility.convertToScreenCoordinates(bounds, in: self)
+        return lastExternalFocusFrame.midY < messageFrame.midY ? .top : .bottom
+    }
+
+    private func inferredEntryEdge(fromScreenPoint point: CGPoint) -> ExternalEntryEdge {
+        let messageFrame = UIAccessibility.convertToScreenCoordinates(bounds, in: self)
+        return point.y < messageFrame.midY ? .top : .bottom
+    }
+
+    private func restoreViewportOffsetOnly(_ offsetY: CGFloat) {
+        UIView.performWithoutAnimation {
+            setContentOffset(CGPoint(x: contentOffset.x, y: offsetY), animated: false)
+            layoutIfNeeded()
+        }
+    }
+
+    private func restoreViewport(offsetY: CGFloat, edge: ExternalEntryEdge) {
+        UIView.performWithoutAnimation {
+            setContentOffset(CGPoint(x: contentOffset.x, y: offsetY), animated: false)
+            switch edge {
+            case .top:
+                anchorSelectionToVisiblePageStart()
+            case .bottom:
+                anchorSelectionToVisiblePageEnd()
+            }
+            setContentOffset(CGPoint(x: contentOffset.x, y: offsetY), animated: false)
+            layoutIfNeeded()
+        }
+    }
+
+    private func visibleBoundaryLineNumber(
+        in lines: [ReadingLine],
+        edge: ExternalEntryEdge
+    ) -> Int? {
+        let visibleRect = CGRect(origin: contentOffset, size: bounds.size)
+        let visibleIndices = lines.indices.filter {
+            lines[$0].frameInContentCoordinates.intersects(visibleRect)
+        }
+        guard let first = visibleIndices.first, let last = visibleIndices.last else { return nil }
+        return edge == .top ? first : last
     }
 
     // MARK: - VoiceOver page scrolling
@@ -339,6 +498,19 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         selectedRange = NSRange(location: boundedOffset, length: 0)
     }
 
+    private func anchorSelectionToVisiblePageEnd() {
+        let probe = CGPoint(
+            x: bounds.minX + textContainerInset.left + 1,
+            y: max(bounds.minY + textContainerInset.top + 1, bounds.maxY - textContainerInset.bottom - 1)
+        )
+        guard let position = closestPosition(to: probe) else { return }
+
+        let characterOffset = offset(from: beginningOfDocument, to: position)
+        guard characterOffset >= 0 else { return }
+        let boundedOffset = min(characterOffset, textStorage.length)
+        selectedRange = NSRange(location: boundedOffset, length: 0)
+    }
+
     private func pageStatusString(offsetY: CGFloat, pageHeight: CGFloat, minimumY: CGFloat) -> String {
         let totalHeight = max(bounds.height, contentSize.height + adjustedContentInset.top + adjustedContentInset.bottom)
         let pageCount = max(1, Int(ceil(totalHeight / pageHeight)))
@@ -371,14 +543,18 @@ struct GameMessageLogView: UIViewRepresentable {
         var renderedMessages: [GameRoomMessage] = []
         var contentOffsetObservation: NSKeyValueObservation?
         var contentSizeObservation: NSKeyValueObservation?
+        var accessibilityFocusObservation: NSObjectProtocol?
         private var lastOffsetLogUptime: TimeInterval = 0
 
         deinit {
             contentOffsetObservation?.invalidate()
             contentSizeObservation?.invalidate()
+            if let accessibilityFocusObservation {
+                NotificationCenter.default.removeObserver(accessibilityFocusObservation)
+            }
         }
 
-        func observe(_ textView: UITextView) {
+        func observe(_ textView: GameMessageTextView) {
             contentOffsetObservation = textView.observe(
                 \.contentOffset,
                 options: [.old, .new]
@@ -426,6 +602,20 @@ struct GameMessageLogView: UIViewRepresentable {
                     )
                 )
             }
+
+
+            accessibilityFocusObservation = NotificationCenter.default.addObserver(
+                forName: UIAccessibility.elementFocusedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak textView] notification in
+                guard let textView else { return }
+                let focused = notification.userInfo?[UIAccessibility.focusedElementUserInfoKey]
+                if let focused, (focused as AnyObject) === textView {
+                    return
+                }
+                textView.noteExternalAccessibilityFocus(focused)
+            }
         }
     }
 
@@ -455,6 +645,7 @@ struct GameMessageLogView: UIViewRepresentable {
 
         if replaceWholeDocument(in: textView, with: messages, reason: "initial") {
             context.coordinator.renderedMessages = messages
+            textView.noteMessageRevision(messages.count)
         }
         schedulePostMutationSnapshots(textView, label: "initial")
         return textView
@@ -481,6 +672,7 @@ struct GameMessageLogView: UIViewRepresentable {
             guard !newMessages.isEmpty else { return }
             if append(newMessages, to: textView, existingMessageCount: previous.count) {
                 context.coordinator.renderedMessages = messages
+                (textView as? GameMessageTextView)?.noteMessageRevision(messages.count)
             }
             schedulePostMutationSnapshots(textView, label: "append new=\(newMessages.count)")
             return
@@ -488,6 +680,7 @@ struct GameMessageLogView: UIViewRepresentable {
 
         if replaceWholeDocument(in: textView, with: messages, reason: "reset-or-placeholder-transition") {
             context.coordinator.renderedMessages = messages
+            (textView as? GameMessageTextView)?.noteMessageRevision(messages.count)
         }
         schedulePostMutationSnapshots(textView, label: "fullReplace")
     }
