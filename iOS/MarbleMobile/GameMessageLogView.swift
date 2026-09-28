@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-vo-focus-sync1")
+        record("RESET build=textview-vo-focus-sync2")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-vo-focus-sync1",
+            "build=textview-vo-focus-sync2",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -111,6 +111,15 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
     private struct ReadingLine {
         let content: String
         let frameInContentCoordinates: CGRect
+    }
+
+    private struct NativeAccessibilityCandidate {
+        let source: String
+        let index: Int
+        let element: UIAccessibilityElement
+        let frame: CGRect
+        let visibleHeightRatio: CGFloat
+        let midpointInsideViewport: Bool
     }
 
     private enum ExternalEntryEdge: String {
@@ -291,7 +300,7 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         let explicitCount = explicitElements?.count
         let messageFrame = UIAccessibility.convertToScreenCoordinates(bounds, in: self)
 
-        var visibleCandidates: [(source: String, index: Int, element: UIAccessibilityElement)] = []
+        var visibleCandidates: [NativeAccessibilityCandidate] = []
         var seen = Set<ObjectIdentifier>()
 
         func consider(_ candidate: Any, source: String, index: Int) {
@@ -302,9 +311,23 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
             guard let container = element.accessibilityContainer,
                   (container as AnyObject) === self
             else { return }
+
             let frame = element.accessibilityFrame
-            guard !frame.isNull, !frame.isInfinite, frame.intersects(messageFrame) else { return }
-            visibleCandidates.append((source, index, element))
+            guard !frame.isNull, !frame.isInfinite, frame.height > 0, frame.intersects(messageFrame) else { return }
+
+            let intersection = frame.intersection(messageFrame)
+            let visibleHeightRatio = max(0, min(1, intersection.height / frame.height))
+            let midpointInsideViewport = frame.midY >= messageFrame.minY && frame.midY <= messageFrame.maxY
+            visibleCandidates.append(
+                NativeAccessibilityCandidate(
+                    source: source,
+                    index: index,
+                    element: element,
+                    frame: frame,
+                    visibleHeightRatio: visibleHeightRatio,
+                    midpointInsideViewport: midpointInsideViewport
+                )
+            )
         }
 
         // NSObject/UIAccessibilityContainer can report NSNotFound-like sentinel
@@ -324,12 +347,10 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         }
 
         visibleCandidates.sort { lhs, rhs in
-            let lhsFrame = lhs.element.accessibilityFrame
-            let rhsFrame = rhs.element.accessibilityFrame
-            if abs(lhsFrame.minY - rhsFrame.minY) > 0.5 {
-                return lhsFrame.minY < rhsFrame.minY
+            if abs(lhs.frame.minY - rhs.frame.minY) > 0.5 {
+                return lhs.frame.minY < rhs.frame.minY
             }
-            return lhsFrame.minX < rhsFrame.minX
+            return lhs.frame.minX < rhs.frame.minX
         }
 
         GameMessageDiagnosticLog.shared.record(
@@ -343,11 +364,32 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
             GameMessageDiagnosticLog.shared.record(
                 "AX_CONTAINER_VISIBLE direction=\(directionName) source=\(candidate.source) "
                 + "index=\(candidate.index) roundTripIndex=\(roundTripIndex) "
+                + String(
+                    format: "visibleHeightRatio=%.3f midpointInside=%@ ",
+                    candidate.visibleHeightRatio,
+                    candidate.midpointInsideViewport.description
+                )
                 + "element=[\(diagnosticAccessibilityObject(candidate.element))]"
             )
         }
 
-        guard let target = visibleCandidates.first else {
+        // Prefer the first paragraph whose vertical midpoint is truly inside the
+        // viewport. A paragraph with only a tiny clipped sliver at the top should
+        // not become the new page's VoiceOver entry point. If no midpoint is in
+        // the viewport (for example an unusually tall paragraph), fall back to
+        // the element with the greatest visible-height ratio.
+        let midpointTarget = visibleCandidates.first { $0.midpointInsideViewport }
+        let fallbackTarget = visibleCandidates.sorted { lhs, rhs in
+            if abs(lhs.visibleHeightRatio - rhs.visibleHeightRatio) > 0.001 {
+                return lhs.visibleHeightRatio > rhs.visibleHeightRatio
+            }
+            if abs(lhs.frame.minY - rhs.frame.minY) > 0.5 {
+                return lhs.frame.minY < rhs.frame.minY
+            }
+            return lhs.frame.minX < rhs.frame.minX
+        }.first
+
+        guard let target = midpointTarget ?? fallbackTarget else {
             GameMessageDiagnosticLog.shared.record(
                 "AX_FOCUS_TARGET direction=\(directionName) result=none"
             )
@@ -356,34 +398,71 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
 
         GameMessageDiagnosticLog.shared.record(
             "AX_FOCUS_TARGET direction=\(directionName) result=found "
+            + "selection=\(midpointTarget != nil ? "midpoint" : "fallback-ratio") "
             + "source=\(target.source) index=\(target.index) "
             + "roundTripIndex=\(index(ofAccessibilityElement: target.element)) "
+            + String(
+                format: "visibleHeightRatio=%.3f midpointInside=%@ ",
+                target.visibleHeightRatio,
+                target.midpointInsideViewport.description
+            )
             + "element=[\(diagnosticAccessibilityObject(target.element))]"
         )
         return target.element
     }
 
-    private func requestVoiceOverFocusOnVisibleNativeElement(directionName: String) {
+    private func currentVoiceOverNativeElementInMessage() -> UIAccessibilityElement? {
+        guard let element = UIAccessibility.focusedElement(using: .notificationVoiceOver) as? UIAccessibilityElement,
+              element.isAccessibilityElement,
+              let container = element.accessibilityContainer,
+              (container as AnyObject) === self
+        else {
+            return nil
+        }
+
+        let frame = element.accessibilityFrame
+        let messageFrame = UIAccessibility.convertToScreenCoordinates(bounds, in: self)
+        guard !frame.isNull, !frame.isInfinite, frame.intersects(messageFrame) else { return nil }
+        return element
+    }
+
+    private func scheduleVoiceOverFocus(
+        directionName: String,
+        reason: String,
+        preferredTarget: UIAccessibilityElement? = nil
+    ) {
         guard UIAccessibility.isVoiceOverRunning else {
             GameMessageDiagnosticLog.shared.record(
-                "AX_FOCUS_REQUEST direction=\(directionName) posted=false voiceOver=false"
-            )
-            return
-        }
-        guard let target = visibleNativeAccessibilityFocusTarget(directionName: directionName) else {
-            GameMessageDiagnosticLog.shared.record(
-                "AX_FOCUS_REQUEST direction=\(directionName) posted=false reason=no-visible-native-element"
+                "AX_FOCUS_REQUEST direction=\(directionName) reason=\(reason) posted=false voiceOver=false"
             )
             return
         }
 
-        recordCurrentVoiceOverFocus(label: "focus-request-before-\(directionName)")
-        UIAccessibility.post(notification: .layoutChanged, argument: target)
+        guard let target = preferredTarget ?? visibleNativeAccessibilityFocusTarget(directionName: directionName) else {
+            GameMessageDiagnosticLog.shared.record(
+                "AX_FOCUS_REQUEST direction=\(directionName) reason=\(reason) posted=false reasonDetail=no-visible-native-element"
+            )
+            return
+        }
+
+        recordCurrentVoiceOverFocus(label: "focus-request-before-schedule-\(directionName)-\(reason)")
         GameMessageDiagnosticLog.shared.record(
-            "AX_FOCUS_REQUEST direction=\(directionName) posted=true "
+            "AX_FOCUS_REQUEST direction=\(directionName) reason=\(reason) scheduled=true "
             + "target=[\(diagnosticAccessibilityObject(target))]"
         )
-        recordCurrentVoiceOverFocus(label: "focus-request-after-immediate-\(directionName)")
+
+        // Let the pageScrolled notification and the scroll return complete first.
+        // No arbitrary delay is used: the focus hand-off is deferred by exactly
+        // one main-runloop turn so VoiceOver does not race the page-scroll event.
+        DispatchQueue.main.async { [weak self, target] in
+            guard let self, self.window != nil else { return }
+            UIAccessibility.post(notification: .layoutChanged, argument: target)
+            GameMessageDiagnosticLog.shared.record(
+                "AX_FOCUS_REQUEST direction=\(directionName) reason=\(reason) posted=true phase=next-runloop "
+                + "target=[\(self.diagnosticAccessibilityObject(target))]"
+            )
+            self.recordCurrentVoiceOverFocus(label: "focus-request-after-post-\(directionName)-\(reason)")
+        }
     }
 
     func noteExternalAccessibilityFocus(_ element: Any?) {
@@ -574,19 +653,35 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
 
         guard abs(targetY - contentOffset.y) > 0.5 else {
             let status = pageStatusString(offsetY: contentOffset.y, pageHeight: pageHeight, minimumY: minimumY)
+            let retainedTarget = currentVoiceOverNativeElementInMessage()
+                ?? visibleNativeAccessibilityFocusTarget(directionName: "\(name)-boundary")
+
+            // Consume vertical page gestures at the document boundary instead of
+            // handing them back to VoiceOver, which previously allowed focus to
+            // escape to the board and caused UITextView to reveal a stale paragraph.
+            // Repeating the current page status gives VoiceOver boundary feedback,
+            // then the current/visible native paragraph is retained on next runloop.
             UIAccessibility.post(notification: .pageScrolled, argument: status)
+            scheduleVoiceOverFocus(
+                directionName: name,
+                reason: "boundary-retain",
+                preferredTarget: retainedTarget
+            )
             GameMessageDiagnosticLog.shared.record(
                 String(
-                    format: "ACCESSIBILITY_SCROLL direction=%@ handled=false boundary=true offsetY=%.1f minY=%.1f maxY=%.1f pageHeight=%.1f status=%@",
+                    format: "AX_BOUNDARY_RETAIN direction=%@ handled=true offsetY=%.1f minY=%.1f maxY=%.1f pageHeight=%.1f status=%@ target=%@",
                     name,
                     contentOffset.y,
                     minimumY,
                     maximumY,
                     pageHeight,
-                    status
+                    status,
+                    retainedTarget == nil ? "fallback-none" : "current-or-visible-native"
                 )
             )
-            return false
+            GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityScroll BOUNDARY direction=\(name)")
+            recordCurrentVoiceOverFocus(label: "accessibilityScroll-boundary-\(name)")
+            return true
         }
 
         // Do not delegate to UIScrollView's VoiceOver implementation here.
@@ -607,10 +702,10 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         let status = pageStatusString(offsetY: targetY, pageHeight: pageHeight, minimumY: minimumY)
         UIAccessibility.post(notification: .pageScrolled, argument: status)
 
-        // The viewport has already moved. Now ask VoiceOver to follow it by
-        // focusing the first UIKit-native accessibility element that is actually
-        // visible in the new message viewport. This uses only public APIs.
-        requestVoiceOverFocusOnVisibleNativeElement(directionName: name)
+        // The viewport has already moved. pageScrolled is posted first; the
+        // layoutChanged focus hand-off is intentionally deferred by one main
+        // runloop so the two accessibility notifications do not race each other.
+        scheduleVoiceOverFocus(directionName: name, reason: "page-move")
 
         GameMessageDiagnosticLog.shared.record(
             String(
