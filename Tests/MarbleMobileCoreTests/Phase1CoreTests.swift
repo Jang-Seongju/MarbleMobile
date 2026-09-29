@@ -1166,6 +1166,29 @@ extension Phase1CoreTests {
         )
     }
 
+    func testCityBuildingPresentationUsesCanonicalAuditoryOrder() {
+        let info = InformationInfo(
+            cityID: 10,
+            cityName: "퀘백",
+            buildings: ["호텔", "빌라", "빌딩"]
+        )
+
+        // DTO 원본은 서버 순서를 그대로 보존한다. 표시할 때만 접근성 기준 순서로 정규화한다.
+        XCTAssertEqual(info.buildings, ["호텔", "빌라", "빌딩"])
+        XCTAssertEqual(
+            InformationCityPresenter.format(info, spec: InformationDisplaySpecs.buildingStatus),
+            "빌라, 빌딩, 호텔"
+        )
+        XCTAssertEqual(
+            InformationResultPresenter.format(
+                queryType: "city_info",
+                result: InformationResult(info: info),
+                asBuildingStatus: true
+            ),
+            "빌라, 빌딩, 호텔"
+        )
+    }
+
     func testStaticInformationCatalogPreservesServerBuildingOrder() throws {
         let catalog = try StaticInformationCatalogParser.parse(staticInformationPayloadForDirectTouchTests())
         XCTAssertEqual(catalog.buildingTypes(cityID: 2), ["땅", "빌라"])
@@ -1216,6 +1239,37 @@ extension Phase1CoreTests {
         XCTAssertEqual(rotor.nextOpponentCityIndex(forward: true), 0)
     }
 
+    func testGameRotorPlayerPositionOrderMatchesPlayerInfoWithoutUnowned() {
+        let players = [1, 2, 3, 4].map { id in
+            GamePlayerSnapshot(
+                playerID: id,
+                userID: id,
+                nickname: "P\(id)",
+                teamName: "P\(id)",
+                marble: 2_000_000,
+                position: id,
+                lapCount: 0,
+                isStranded: false,
+                isBankrupt: false,
+                isAI: false
+            )
+        }
+        var rotor = GameRotorState()
+        rotor.synchronizePlayers(myPlayerID: 3, players: players)
+
+        XCTAssertEqual(rotor.playerPositionPlayerID, 3)
+        XCTAssertEqual(rotor.playerPositionPlayerIDs(myPlayerID: 3, players: players), [3, 4, 1, 2])
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: true, myPlayerID: 3, players: players), 4)
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: true, myPlayerID: 3, players: players), 1)
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: false, myPlayerID: 3, players: players), 4)
+
+        // 플레이어 정보 로터의 특수 `미소유` 대상은 플레이어 위치에는 들어오지 않는다.
+        XCTAssertEqual(
+            rotor.playerTargets(myPlayerID: 3, players: players),
+            [.player(3), .player(4), .player(1), .player(2), .unowned]
+        )
+    }
+
     func testGameRotorCategoryAndChildCyclesAreDeterministic() {
         var rotor = GameRotorState()
         XCTAssertEqual(rotor.category, .cityInformation)
@@ -1223,8 +1277,9 @@ extension Phase1CoreTests {
         XCTAssertEqual(rotor.moveCategoryForward(), .monopolyInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .cityStatusInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .unitCostInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .playerPositionInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .cityInformation)
-        XCTAssertEqual(rotor.moveCategoryBackward(), .unitCostInformation)
+        XCTAssertEqual(rotor.moveCategoryBackward(), .playerPositionInformation)
 
         rotor.reset()
         XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .toll)

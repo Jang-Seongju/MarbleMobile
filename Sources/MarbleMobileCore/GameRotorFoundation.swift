@@ -6,6 +6,7 @@ public enum GameRotorCategory: Int, CaseIterable, Equatable, Sendable {
     case monopolyInformation
     case cityStatusInformation
     case unitCostInformation
+    case playerPositionInformation
 
     public var displayName: String {
         switch self {
@@ -14,6 +15,7 @@ public enum GameRotorCategory: Int, CaseIterable, Equatable, Sendable {
         case .monopolyInformation: return "독점 정보"
         case .cityStatusInformation: return "도시 상태"
         case .unitCostInformation: return "건물별 비용"
+        case .playerPositionInformation: return "플레이어 위치"
         }
     }
 }
@@ -103,6 +105,7 @@ public struct GameRotorState: Equatable, Sendable {
     public private(set) var category: GameRotorCategory = .cityInformation
     public private(set) var cityInformationKind: GameRotorCityInformationKind = .toll
     public private(set) var playerTarget: GameRotorPlayerTarget?
+    public private(set) var playerPositionPlayerID: Int?
     public private(set) var monopolyKind: GameRotorMonopolyKind = .achieved
     public private(set) var cityStatusKind: GameRotorCityStatusKind = .festival
     public private(set) var unitValueKind: GameRotorUnitValueKind = .buildCost
@@ -133,21 +136,36 @@ public struct GameRotorState: Equatable, Sendable {
     }
 
     public mutating func synchronizePlayers(myPlayerID: Int?, players: [GamePlayerSnapshot]) {
-        guard let myPlayerID, players.contains(where: { $0.playerID == myPlayerID }) else {
+        let orderedIDs = playerPositionPlayerIDs(myPlayerID: myPlayerID, players: players)
+        guard let myPlayerID, !orderedIDs.isEmpty else {
             playerTarget = nil
+            playerPositionPlayerID = nil
             return
         }
-        if case .player(let id) = playerTarget, players.contains(where: { $0.playerID == id }) { return }
-        if playerTarget == .unowned { return }
-        playerTarget = .player(myPlayerID)
+
+        if case .player(let id) = playerTarget, !orderedIDs.contains(id) {
+            playerTarget = .player(myPlayerID)
+        } else if playerTarget == nil {
+            playerTarget = .player(myPlayerID)
+        }
+
+        if let id = playerPositionPlayerID, orderedIDs.contains(id) {
+            return
+        }
+        playerPositionPlayerID = myPlayerID
     }
 
-    public func playerTargets(myPlayerID: Int?, players: [GamePlayerSnapshot]) -> [GameRotorPlayerTarget] {
+    public func playerPositionPlayerIDs(myPlayerID: Int?, players: [GamePlayerSnapshot]) -> [Int] {
         guard let myPlayerID, players.contains(where: { $0.playerID == myPlayerID }) else { return [] }
         let ids = players.map(\.playerID).sorted()
         guard let start = ids.firstIndex(of: myPlayerID) else { return [] }
-        let rotated = Array(ids[start...]) + Array(ids[..<start])
-        return rotated.map(GameRotorPlayerTarget.player) + [.unowned]
+        return Array(ids[start...]) + Array(ids[..<start])
+    }
+
+    public func playerTargets(myPlayerID: Int?, players: [GamePlayerSnapshot]) -> [GameRotorPlayerTarget] {
+        let playerIDs = playerPositionPlayerIDs(myPlayerID: myPlayerID, players: players)
+        guard !playerIDs.isEmpty else { return [] }
+        return playerIDs.map(GameRotorPlayerTarget.player) + [.unowned]
     }
 
     @discardableResult
@@ -183,6 +201,20 @@ public struct GameRotorState: Equatable, Sendable {
         }
         playerTarget = nextTarget
         return playerTarget
+    }
+
+    @discardableResult
+    public mutating func movePlayerPositionTarget(
+        forward: Bool,
+        myPlayerID: Int?,
+        players: [GamePlayerSnapshot]
+    ) -> Int? {
+        let targets = playerPositionPlayerIDs(myPlayerID: myPlayerID, players: players)
+        guard !targets.isEmpty else { playerPositionPlayerID = nil; return nil }
+        let current = playerPositionPlayerID.flatMap { targets.firstIndex(of: $0) } ?? 0
+        let next = Self.normalized(current + (forward ? 1 : -1), count: targets.count)
+        playerPositionPlayerID = targets[next]
+        return playerPositionPlayerID
     }
 
     @discardableResult

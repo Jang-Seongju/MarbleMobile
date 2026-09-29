@@ -329,6 +329,25 @@ public enum InformationDisplaySpecs {
 
 // MARK: - Presentation
 
+public enum InformationBuildingPresenter {
+    // server(677) InformationInfoAssembler의 정적 건물 순서를 표시 기준으로
+    // 사용한다. 원본 DTO의 buildings 배열은 변경하지 않고, 청각 출력에서만
+    // 순서를 정규화한다. 알려지지 않은 새 건물은 서버가 보낸 상대 순서를 유지한다.
+    private static let displayOrder = [
+        "깃발", "땅", "빌라", "빌딩", "호텔", "랜드마크", "파라솔", "방갈로",
+    ]
+
+    public static func ordered(_ buildings: [String]) -> [String] {
+        let rank = Dictionary(uniqueKeysWithValues: displayOrder.enumerated().map { ($0.element, $0.offset) })
+        return buildings.enumerated().sorted { lhs, rhs in
+            let leftRank = rank[lhs.element] ?? Int.max
+            let rightRank = rank[rhs.element] ?? Int.max
+            if leftRank != rightRank { return leftRank < rightRank }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+}
+
 public enum InformationCityPresenter {
     public static func format(
         _ info: InformationInfo,
@@ -346,7 +365,8 @@ public enum InformationCityPresenter {
             case .cityName:
                 text = info.cityName
             case .buildings:
-                text = info.buildings.isEmpty ? nil : info.buildings.joined(separator: ", ")
+                let buildings = InformationBuildingPresenter.ordered(info.buildings)
+                text = buildings.isEmpty ? nil : buildings.joined(separator: ", ")
             case .groupName:
                 text = info.groupName
             case .isColorMonopoly:
@@ -897,7 +917,8 @@ public enum InformationResultPresenter {
 
     private static func buildingStatus(_ result: InformationResult) -> String {
         guard let info = result.info else { return "도시 정보를 찾을 수 없습니다." }
-        return info.buildings.isEmpty ? "건물 없음" : info.buildings.joined(separator: ", ")
+        let buildings = InformationBuildingPresenter.ordered(info.buildings)
+        return buildings.isEmpty ? "건물 없음" : buildings.joined(separator: ", ")
     }
 
     private static func marble(_ value: Int?) -> String {

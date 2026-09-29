@@ -106,6 +106,7 @@ final class AppModel: ObservableObject {
     private var pendingInteractionResultGate: InteractionResultGate?
     private var completedInteractionFlowAwaitingDismiss: String?
     private var pendingRotorDirections: [String: [Bool]] = [:]
+    private var pendingPlayerPositionTargetIDs: [Int] = []
     private var aiRemainderTextOnly = false
     private var aiRemainderActivationPending = false
     private var appSceneActive = true
@@ -634,6 +635,16 @@ final class AppModel: ObservableObject {
                 return
             }
             announce(InformationResultPresenter.buildingType(type))
+        case .playerPositionInformation:
+            guard let playerID = gameRotor.movePlayerPositionTarget(
+                forward: forward,
+                myPlayerID: myPlayerID,
+                players: gamePlayers
+            ) else {
+                announce("플레이어 위치 정보 없음")
+                return
+            }
+            announce(playerRotorTargetName(.player(playerID)))
         }
     }
 
@@ -668,6 +679,8 @@ final class AppModel: ObservableObject {
             socket.send(WireMessages.informationQuery(queryType: query))
         case .unitCostInformation:
             requestRotorUnitCost(forward: forward)
+        case .playerPositionInformation:
+            requestRotorPlayerPosition()
         }
     }
 
@@ -704,6 +717,20 @@ final class AppModel: ObservableObject {
             if playerID == myPlayerID { return "당신" }
             return gamePlayers.first(where: { $0.playerID == playerID })?.nickname ?? "플레이어 \(playerID)"
         }
+    }
+
+    private func requestRotorPlayerPosition() {
+        guard gameIsActive || gameFinished else {
+            announce("게임이 시작되지 않았습니다.")
+            return
+        }
+        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+        guard let playerID = gameRotor.playerPositionPlayerID else {
+            announce("플레이어 위치 정보 없음")
+            return
+        }
+        pendingPlayerPositionTargetIDs.append(playerID)
+        socket.send(WireMessages.informationQuery(queryType: "player_positions"))
     }
 
     private func requestRotorPlayerCity(forward: Bool) {
@@ -1103,6 +1130,7 @@ final class AppModel: ObservableObject {
             staticInformationCatalog = snapshot.staticInformation
             gameRotor.reset()
             gameRotor.synchronizePlayers(myPlayerID: snapshot.yourPlayerID, players: snapshot.players)
+            pendingPlayerPositionTargetIDs = []
             currentTurnGeneration = nil
             nextTurnCommand = "roll_dice"
             turnCommandWindowOpen = false
@@ -1504,6 +1532,11 @@ final class AppModel: ObservableObject {
         return value
     }
 
+    private func dequeuePendingPlayerPositionTargetID() -> Int? {
+        guard !pendingPlayerPositionTargetIDs.isEmpty else { return nil }
+        return pendingPlayerPositionTargetIDs.removeFirst()
+    }
+
     private func formatInformationResponse(_ data: [String: Any]) -> String? {
         guard let queryType = data["query_type"] as? String,
               let payload = data["payload"] as? [String: Any],
@@ -1521,6 +1554,10 @@ final class AppModel: ObservableObject {
                 gameRotor.updateFilteredCityIndex(filter: filter, correctedIndex: correctedIndex)
             }
             if let info = result.info { jumpBoardToInformationCity(info) }
+        }
+
+        if queryType == "player_positions", let playerID = dequeuePendingPlayerPositionTargetID() {
+            return formatRotorPlayerPositionResponse(result: result, playerID: playerID)
         }
 
         if queryType == "achieved_monopoly_status" || queryType == "ending_monopoly_alerts" {
@@ -1553,6 +1590,35 @@ final class AppModel: ObservableObject {
             valueField: payload["value_field"] as? String,
             filterType: payload["filter"] as? String,
             asBuildingStatus: asBuildingStatus
+        )
+    }
+
+    private func formatRotorPlayerPositionResponse(
+        result: InformationResult,
+        playerID: Int
+    ) -> String? {
+        guard !result.items.isEmpty else {
+            return InformationResultPresenter.format(
+                queryType: "player_positions",
+                result: result,
+                myPlayerID: myPlayerID
+            )
+        }
+        guard let index = result.items.firstIndex(where: { $0.playerID == playerID }) else {
+            return "플레이어 위치 정보 없음"
+        }
+
+        if let player = gamePlayers.first(where: { $0.playerID == playerID }),
+           boardCatalog?.cell(at: player.position) != nil {
+            boardCursor.jump(to: player.position)
+            gameRotor.resetBoardCellSelections()
+        }
+
+        return InformationResultPresenter.format(
+            queryType: "player_positions",
+            result: result,
+            myPlayerID: myPlayerID,
+            index: index
         )
     }
 
@@ -1924,6 +1990,7 @@ final class AppModel: ObservableObject {
         gameRotor.reset()
         gameRotor.synchronizePlayers(myPlayerID: snapshot.yourPlayerID, players: snapshot.gameState.players)
         pendingRotorDirections = [:]
+        pendingPlayerPositionTargetIDs = []
 
         if let me = snapshot.gameState.players.first(where: { $0.playerID == snapshot.yourPlayerID }) {
             boardCursor.jump(to: me.position)
@@ -2180,6 +2247,7 @@ final class AppModel: ObservableObject {
         resetPrivateTurnPreparationState()
         gameRotor.reset()
         pendingRotorDirections = [:]
+        pendingPlayerPositionTargetIDs = []
         resetAIRemainderOutputMode()
     }
 

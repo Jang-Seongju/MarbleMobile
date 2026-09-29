@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-vo-focus-sync2-external-viewport-reentry2")
+        record("RESET build=textview-vo-focus-sync2")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-vo-focus-sync2-external-viewport-reentry2",
+            "build=textview-vo-focus-sync2",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -135,7 +135,6 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
     private var lastExternalFocusFrame: CGRect?
     private var pendingEntryOffsetY: CGFloat?
     private var pendingEntryEdge: ExternalEntryEdge?
-    private var externallyAdjustedViewportOffsetY: CGFloat?
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -145,30 +144,6 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
     override func accessibilityElementDidBecomeFocused() {
         super.accessibilityElementDidBecomeFocused()
         isMessageAccessibilityFocused = true
-
-        if !messagesAddedWhileOutside, let adjustedViewportOffsetY = externallyAdjustedViewportOffsetY {
-            pendingEntryOffsetY = adjustedViewportOffsetY
-            pendingEntryEdge = .top
-            restoreViewport(offsetY: adjustedViewportOffsetY, edge: .top)
-            externallyAdjustedViewportOffsetY = nil
-            messagesAddedWhileOutside = false
-            revisionWhenFocusLeft = nil
-            GameMessageDiagnosticLog.shared.record(
-                String(
-                    format: "FOCUS_REENTRY externalViewport=true targetY=%.1f savedY=%@",
-                    adjustedViewportOffsetY,
-                    savedViewportOffsetY.map { String(format: "%.1f", $0) } ?? "nil"
-                )
-            )
-            scheduleVoiceOverFocus(
-                directionName: "external-viewport-reentry",
-                reason: "preserve-current-external-viewport"
-            )
-            GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=became external-viewport")
-            return
-        }
-
-        externallyAdjustedViewportOffsetY = nil
 
         guard let targetOffsetY = reentryTargetOffsetY() else {
             pendingEntryOffsetY = nil
@@ -203,7 +178,6 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         messagesAddedWhileOutside = false
         pendingEntryOffsetY = nil
         pendingEntryEdge = nil
-        externallyAdjustedViewportOffsetY = nil
         isMessageAccessibilityFocused = false
         GameMessageDiagnosticLog.shared.record(
             String(
@@ -491,68 +465,6 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         }
     }
 
-    func noteObservedContentOffsetChange(from oldOffset: CGPoint, to newOffset: CGPoint) {
-        guard UIAccessibility.isVoiceOverRunning,
-              abs(newOffset.y - oldOffset.y) > 0.5,
-              !messagesAddedWhileOutside,
-              !isCurrentVoiceOverFocusNativeMessageContent()
-        else { return }
-
-        externallyAdjustedViewportOffsetY = clampedViewportOffsetY(newOffset.y)
-        GameMessageDiagnosticLog.shared.record(
-            String(
-                format: "EXTERNAL_VIEWPORT_CAPTURE oldY=%.1f newY=%.1f capturedY=%.1f",
-                oldOffset.y,
-                newOffset.y,
-                externallyAdjustedViewportOffsetY ?? newOffset.y
-            )
-        )
-    }
-
-    private func isCurrentVoiceOverFocusNativeMessageContent() -> Bool {
-        guard let focused = UIAccessibility.focusedElement(using: .notificationVoiceOver) else {
-            return false
-        }
-
-        if (focused as AnyObject) === self {
-            return true
-        }
-
-        guard let focusedElement = focused as? UIAccessibilityElement else {
-            return false
-        }
-
-        let methodCount = accessibilityElementCount()
-        if methodCount > 0, methodCount <= 4_096 {
-            for index in 0..<methodCount {
-                if let element = accessibilityElement(at: index) as? UIAccessibilityElement,
-                   element === focusedElement {
-                    return true
-                }
-            }
-        }
-
-        if let explicitElements = accessibilityElements {
-            for element in explicitElements {
-                if let accessibilityElement = element as? UIAccessibilityElement,
-                   accessibilityElement === focusedElement {
-                    return true
-                }
-            }
-        }
-
-        return false
-    }
-
-    private func clampedViewportOffsetY(_ proposedOffsetY: CGFloat) -> CGFloat {
-        let minimumY = -adjustedContentInset.top
-        let maximumY = max(
-            minimumY,
-            contentSize.height - bounds.height + adjustedContentInset.bottom
-        )
-        return min(maximumY, max(minimumY, proposedOffsetY))
-    }
-
     func noteExternalAccessibilityFocus(_ element: Any?) {
         let frame: CGRect?
         if let view = element as? UIView {
@@ -578,7 +490,6 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
            let revisionWhenFocusLeft,
            revision > revisionWhenFocusLeft {
             messagesAddedWhileOutside = true
-            externallyAdjustedViewportOffsetY = nil
         }
 
         GameMessageDiagnosticLog.shared.record(
@@ -973,7 +884,6 @@ struct GameMessageLogView: UIViewRepresentable {
 
                 let now = ProcessInfo.processInfo.systemUptime
                 let dy = abs(new.y - old.y)
-                view.noteObservedContentOffsetChange(from: old, to: new)
                 if now - self.lastOffsetLogUptime >= 0.05 || dy >= 40 {
                     self.lastOffsetLogUptime = now
                     GameMessageDiagnosticLog.shared.record(
