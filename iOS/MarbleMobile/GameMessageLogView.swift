@@ -33,7 +33,7 @@ final class GameMessageDiagnosticLog {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
         lock.unlock()
-        record("RESET build=textview-vo-focus-sync2-adjustable-reentry1")
+        record("RESET build=textview-vo-focus-sync2-external-viewport-reentry2")
     }
 
     func record(_ message: String) {
@@ -55,7 +55,7 @@ final class GameMessageDiagnosticLog {
 
         let header = [
             "MarbleMobile message diagnostics",
-            "build=textview-vo-focus-sync2-adjustable-reentry1",
+            "build=textview-vo-focus-sync2-external-viewport-reentry2",
             "lines=\(snapshot.count)",
             "---"
         ]
@@ -135,7 +135,6 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
     private var lastExternalFocusFrame: CGRect?
     private var pendingEntryOffsetY: CGFloat?
     private var pendingEntryEdge: ExternalEntryEdge?
-    private var isExternalAdjustableFocusActive = false
     private var externallyAdjustedViewportOffsetY: CGFloat?
 
     override func didMoveToWindow() {
@@ -147,38 +146,29 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         super.accessibilityElementDidBecomeFocused()
         isMessageAccessibilityFocused = true
 
-        let adjustedViewportOffsetY = externallyAdjustedViewportOffsetY
-        if !messagesAddedWhileOutside, let adjustedViewportOffsetY {
-            // VoiceOver's system scroll-position control can move the UITextView
-            // while message text itself is not focused. Treat that user-adjusted
-            // viewport as authoritative instead of restoring the older offset
-            // captured when focus originally left the message document.
-            pendingEntryOffsetY = nil
-            pendingEntryEdge = nil
+        if !messagesAddedWhileOutside, let adjustedViewportOffsetY = externallyAdjustedViewportOffsetY {
+            pendingEntryOffsetY = adjustedViewportOffsetY
+            pendingEntryEdge = .top
             restoreViewport(offsetY: adjustedViewportOffsetY, edge: .top)
             externallyAdjustedViewportOffsetY = nil
-            isExternalAdjustableFocusActive = false
-            GameMessageDiagnosticLog.shared.record(
-                String(
-                    format: "FOCUS_REENTRY adjustedViewport=true targetY=%.1f savedY=%@ outsideAppend=false revision=%d leftRevision=%@",
-                    adjustedViewportOffsetY,
-                    savedViewportOffsetY.map { String(format: "%.1f", $0) } ?? "nil",
-                    messageRevision,
-                    revisionWhenFocusLeft.map(String.init) ?? "nil"
-                )
-            )
             messagesAddedWhileOutside = false
             revisionWhenFocusLeft = nil
-            scheduleVoiceOverFocus(
-                directionName: "adjustable-reentry",
-                reason: "preserve-adjusted-viewport"
+            GameMessageDiagnosticLog.shared.record(
+                String(
+                    format: "FOCUS_REENTRY externalViewport=true targetY=%.1f savedY=%@",
+                    adjustedViewportOffsetY,
+                    savedViewportOffsetY.map { String(format: "%.1f", $0) } ?? "nil"
+                )
             )
-            GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=became adjusted-viewport")
+            scheduleVoiceOverFocus(
+                directionName: "external-viewport-reentry",
+                reason: "preserve-current-external-viewport"
+            )
+            GameMessageDiagnosticLog.shared.snapshot(self, label: "accessibilityFocus=became external-viewport")
             return
         }
 
         externallyAdjustedViewportOffsetY = nil
-        isExternalAdjustableFocusActive = false
 
         guard let targetOffsetY = reentryTargetOffsetY() else {
             pendingEntryOffsetY = nil
@@ -213,6 +203,7 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         messagesAddedWhileOutside = false
         pendingEntryOffsetY = nil
         pendingEntryEdge = nil
+        externallyAdjustedViewportOffsetY = nil
         isMessageAccessibilityFocused = false
         GameMessageDiagnosticLog.shared.record(
             String(
@@ -500,42 +491,17 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         }
     }
 
-    func noteAccessibilityFocusTransition(_ focused: Any?) {
-        // Focus notifications and accessibilityElementDidLoseFocus() do not have
-        // a documented relative ordering. Recognize an adjustable control first
-        // so the capture works regardless of which callback VoiceOver delivers
-        // first while moving away from a message paragraph.
-        if accessibilityTraits(of: focused).contains(.adjustable) {
-            if !isExternalAdjustableFocusActive {
-                externallyAdjustedViewportOffsetY = nil
-            }
-            isExternalAdjustableFocusActive = true
-            GameMessageDiagnosticLog.shared.record(
-                "ADJUSTABLE_FOCUS active=true focused=[\(diagnosticAccessibilityObject(focused))]"
-            )
-            return
-        }
-
-        if isMessageAccessibilityFocused {
-            isExternalAdjustableFocusActive = false
-            return
-        }
-
-        if !isMessageAccessibilityObject(focused) {
-            isExternalAdjustableFocusActive = false
-            externallyAdjustedViewportOffsetY = nil
-        }
-    }
-
     func noteObservedContentOffsetChange(from oldOffset: CGPoint, to newOffset: CGPoint) {
-        guard isExternalAdjustableFocusActive,
-              abs(newOffset.y - oldOffset.y) > 0.5
+        guard UIAccessibility.isVoiceOverRunning,
+              abs(newOffset.y - oldOffset.y) > 0.5,
+              !messagesAddedWhileOutside,
+              !isCurrentVoiceOverFocusNativeMessageContent()
         else { return }
 
         externallyAdjustedViewportOffsetY = clampedViewportOffsetY(newOffset.y)
         GameMessageDiagnosticLog.shared.record(
             String(
-                format: "ADJUSTABLE_VIEWPORT_CAPTURE oldY=%.1f newY=%.1f capturedY=%.1f",
+                format: "EXTERNAL_VIEWPORT_CAPTURE oldY=%.1f newY=%.1f capturedY=%.1f",
                 oldOffset.y,
                 newOffset.y,
                 externallyAdjustedViewportOffsetY ?? newOffset.y
@@ -543,27 +509,38 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
         )
     }
 
-    private func accessibilityTraits(of element: Any?) -> UIAccessibilityTraits {
-        if let view = element as? UIView {
-            return view.accessibilityTraits
+    private func isCurrentVoiceOverFocusNativeMessageContent() -> Bool {
+        guard let focused = UIAccessibility.focusedElement(using: .notificationVoiceOver) else {
+            return false
         }
-        if let accessibilityElement = element as? UIAccessibilityElement {
-            return accessibilityElement.accessibilityTraits
-        }
-        return []
-    }
 
-    private func isMessageAccessibilityObject(_ element: Any?) -> Bool {
-        guard let element else { return false }
-        if (element as AnyObject) === self { return true }
-        if let view = element as? UIView {
-            return view === self || view.isDescendant(of: self)
+        if (focused as AnyObject) === self {
+            return true
         }
-        if let accessibilityElement = element as? UIAccessibilityElement,
-           let container = accessibilityElement.accessibilityContainer
-        {
-            return (container as AnyObject) === self
+
+        guard let focusedElement = focused as? UIAccessibilityElement else {
+            return false
         }
+
+        let methodCount = accessibilityElementCount()
+        if methodCount > 0, methodCount <= 4_096 {
+            for index in 0..<methodCount {
+                if let element = accessibilityElement(at: index) as? UIAccessibilityElement,
+                   element === focusedElement {
+                    return true
+                }
+            }
+        }
+
+        if let explicitElements = accessibilityElements {
+            for element in explicitElements {
+                if let accessibilityElement = element as? UIAccessibilityElement,
+                   accessibilityElement === focusedElement {
+                    return true
+                }
+            }
+        }
+
         return false
     }
 
@@ -601,6 +578,7 @@ private final class GameMessageTextView: UITextView, UIAccessibilityReadingConte
            let revisionWhenFocusLeft,
            revision > revisionWhenFocusLeft {
             messagesAddedWhileOutside = true
+            externallyAdjustedViewportOffsetY = nil
         }
 
         GameMessageDiagnosticLog.shared.record(
@@ -996,7 +974,6 @@ struct GameMessageLogView: UIViewRepresentable {
                 let now = ProcessInfo.processInfo.systemUptime
                 let dy = abs(new.y - old.y)
                 view.noteObservedContentOffsetChange(from: old, to: new)
-
                 if now - self.lastOffsetLogUptime >= 0.05 || dy >= 40 {
                     self.lastOffsetLogUptime = now
                     GameMessageDiagnosticLog.shared.record(
@@ -1054,7 +1031,6 @@ struct GameMessageLogView: UIViewRepresentable {
                 DispatchQueue.main.async { [weak textView] in
                     textView?.recordCurrentVoiceOverFocus(label: "notification-next-runloop", sequence: sequence)
                 }
-                textView.noteAccessibilityFocusTransition(focused)
                 if let focused, (focused as AnyObject) === textView {
                     return
                 }
