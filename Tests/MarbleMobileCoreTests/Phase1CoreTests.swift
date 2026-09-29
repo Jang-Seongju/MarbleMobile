@@ -1259,6 +1259,8 @@ extension Phase1CoreTests {
 
         XCTAssertEqual(rotor.playerPositionPlayerID, 3)
         XCTAssertEqual(rotor.playerPositionPlayerIDs(myPlayerID: 3, players: players), [3, 4, 1, 2])
+        // 2층 로터: 첫 아래 쓸기는 기본 대상인 본인, 이후 player_id 순환.
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: true, myPlayerID: 3, players: players), 3)
         XCTAssertEqual(rotor.movePlayerPositionTarget(forward: true, myPlayerID: 3, players: players), 4)
         XCTAssertEqual(rotor.movePlayerPositionTarget(forward: true, myPlayerID: 3, players: players), 1)
         XCTAssertEqual(rotor.movePlayerPositionTarget(forward: false, myPlayerID: 3, players: players), 4)
@@ -1268,6 +1270,29 @@ extension Phase1CoreTests {
             rotor.playerTargets(myPlayerID: 3, players: players),
             [.player(3), .player(4), .player(1), .player(2), .unowned]
         )
+    }
+
+    func testGameRotorPlayerPositionFirstUpStartsReverseFromSelf() {
+        let players = [1, 2, 3, 4].map { id in
+            GamePlayerSnapshot(
+                playerID: id,
+                userID: id,
+                nickname: "P\(id)",
+                teamName: "P\(id)",
+                marble: 2_000_000,
+                position: id,
+                lapCount: 0,
+                isStranded: false,
+                isBankrupt: false,
+                isAI: false
+            )
+        }
+        var rotor = GameRotorState()
+        rotor.synchronizePlayers(myPlayerID: 3, players: players)
+
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: false, myPlayerID: 3, players: players), 2)
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: false, myPlayerID: 3, players: players), 1)
+        XCTAssertEqual(rotor.movePlayerPositionTarget(forward: true, myPlayerID: 3, players: players), 2)
     }
 
     func testGameRotorCategoryAndChildCyclesAreDeterministic() {

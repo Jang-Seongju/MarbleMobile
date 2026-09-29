@@ -636,15 +636,7 @@ final class AppModel: ObservableObject {
             }
             announce(InformationResultPresenter.buildingType(type))
         case .playerPositionInformation:
-            guard let playerID = gameRotor.movePlayerPositionTarget(
-                forward: forward,
-                myPlayerID: myPlayerID,
-                players: gamePlayers
-            ) else {
-                announce("플레이어 위치 정보 없음")
-                return
-            }
-            announce(playerRotorTargetName(.player(playerID)))
+            announce("플레이어 위치는 두 손가락 위아래 쓸기로 조회합니다.")
         }
     }
 
@@ -680,7 +672,7 @@ final class AppModel: ObservableObject {
         case .unitCostInformation:
             requestRotorUnitCost(forward: forward)
         case .playerPositionInformation:
-            requestRotorPlayerPosition()
+            requestRotorPlayerPosition(forward: forward)
         }
     }
 
@@ -719,13 +711,17 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func requestRotorPlayerPosition() {
+    private func requestRotorPlayerPosition(forward: Bool) {
         guard gameIsActive || gameFinished else {
             announce("게임이 시작되지 않았습니다.")
             return
         }
         gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
-        guard let playerID = gameRotor.playerPositionPlayerID else {
+        guard let playerID = gameRotor.movePlayerPositionTarget(
+            forward: forward,
+            myPlayerID: myPlayerID,
+            players: gamePlayers
+        ) else {
             announce("플레이어 위치 정보 없음")
             return
         }

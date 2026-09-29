@@ -140,6 +140,7 @@ public struct GameRotorState: Equatable, Sendable {
         guard let myPlayerID, !orderedIDs.isEmpty else {
             playerTarget = nil
             playerPositionPlayerID = nil
+            playerPositionTraversalStarted = false
             return
         }
 
@@ -153,6 +154,7 @@ public struct GameRotorState: Equatable, Sendable {
             return
         }
         playerPositionPlayerID = myPlayerID
+        playerPositionTraversalStarted = false
     }
 
     public func playerPositionPlayerIDs(myPlayerID: Int?, players: [GamePlayerSnapshot]) -> [Int] {
@@ -210,10 +212,22 @@ public struct GameRotorState: Equatable, Sendable {
         players: [GamePlayerSnapshot]
     ) -> Int? {
         let targets = playerPositionPlayerIDs(myPlayerID: myPlayerID, players: players)
-        guard !targets.isEmpty else { playerPositionPlayerID = nil; return nil }
+        guard !targets.isEmpty else {
+            playerPositionPlayerID = nil
+            playerPositionTraversalStarted = false
+            return nil
+        }
+
         let current = playerPositionPlayerID.flatMap { targets.firstIndex(of: $0) } ?? 0
-        let next = Self.normalized(current + (forward ? 1 : -1), count: targets.count)
-        playerPositionPlayerID = targets[next]
+        if playerPositionTraversalStarted {
+            let next = Self.normalized(current + (forward ? 1 : -1), count: targets.count)
+            playerPositionPlayerID = targets[next]
+        } else {
+            playerPositionTraversalStarted = true
+            // 플레이어 위치는 2층 로터다. 첫 아래 쓸기는 기본 대상인 본인부터
+            // 조회하고, 첫 위 쓸기는 역순의 첫 항목(본인 직전 player_id)부터 시작한다.
+            playerPositionPlayerID = forward ? targets[0] : targets[targets.count - 1]
+        }
         return playerPositionPlayerID
     }
 
@@ -331,6 +345,7 @@ public struct GameRotorState: Equatable, Sendable {
 
     private var cityInformationTraversalStarted = false
     private var unitValueTraversalStarted = false
+    private var playerPositionTraversalStarted = false
 
     private static func next<T: Equatable>(_ current: T, in values: [T], step: Int) -> T {
         guard let index = values.firstIndex(of: current), !values.isEmpty else { return current }
