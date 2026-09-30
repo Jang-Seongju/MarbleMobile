@@ -42,6 +42,16 @@ struct LoginView: View {
                 }
             }
             .navigationTitle("마블 게임 - 로그인")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    MobileMainMenu(
+                        context: .login,
+                        loginEnabled: !submitting,
+                        onLogin: { Task { await submitLogin() } }
+                    )
+                    .environmentObject(model)
+                }
+            }
             .task {
                 model.loadSavedLoginIfNeeded()
             }

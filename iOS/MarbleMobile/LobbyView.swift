@@ -34,12 +34,11 @@ struct LobbyView: View {
                     if model.isInGameRoom {
                         Button("게임방 보기") { model.showGameRoom() }
                     }
-                    Menu("메뉴") {
-                        Button("방 개설") { model.performRoomAction(.create, room: nil) }
-                            .disabled(model.entryPhase != .active || model.isRoomCreationPending || model.isRoomJoinPending || model.isInGameRoom)
-                        Divider()
-                        Button("로그아웃") { model.logout() }
-                    }
+                    MobileMainMenu(
+                        context: .lobby,
+                        selectedLobbyRoom: selectedLobbyRoom
+                    )
+                    .environmentObject(model)
                 }
             }
             .sheet(isPresented: Binding(
@@ -105,6 +104,12 @@ struct LobbyView: View {
         }
     }
 
+    private var selectedLobbyRoom: GameRoomSummary? {
+        let roomID = focusedRoomID ?? lastRoomID
+        guard let roomID else { return nil }
+        return model.rooms.first { $0.id == roomID }
+    }
+
     private var informationLines: [String] {
         guard let text = model.profileText else { return [] }
         return text.split(whereSeparator: \.isNewline).map(String.init)
@@ -141,7 +146,10 @@ struct LobbyView: View {
             hasGameRoom: model.isInGameRoom,
             isSpectator: false,
             messageImplemented: false,
-            noteImplemented: false
+            noteImplemented: false,
+            roomInvitationImplemented: false,
+            spectatorInvitationImplemented: false,
+            socialInteractionImplemented: false
         )
 
         Text(PresenceFormatter.label(
@@ -155,11 +163,14 @@ struct LobbyView: View {
             if let value { lastUserID = value }
         }
         .accessibilityActions {
-            // VoiceOver의 한 손가락 아래 쓸기가 PC판 메뉴의 순방향이 되도록
-            // 등록 순서만 뒤집는다. 도메인 액션 배열 자체는 PC 순서를 유지한다.
+            // 접속자 메뉴는 실기기에서 확인된 기존 순서/방향을 그대로 보존한다.
+            // 구현되지 않은 액션은 Button 자체를 disabled하여 VoiceOver가 표준
+            // 비활성 상태(예: "흐리게 표시됨")를 읽도록 하고, 이름을 변형하지 않는다.
             ForEach(actions.reversed()) { action in
-                Button(action.title) { model.performUserAction(action.kind, user: user) }
-                    .disabled(!action.isEnabled)
+                Button(action.title) {
+                    model.performUserAction(action.kind, user: user)
+                }
+                .disabled(!action.isEnabled)
             }
         }
     }
@@ -201,14 +212,50 @@ struct LobbyView: View {
                     model.performRoomAction(.join, room: room)
                 }
             }
+            // 게임방 custom action은 client(393)의 다섯 항목을 항상 유지한다.
+            // VoiceOver custom action이 LIFO로 노출되는 현재 실기기 계약에 맞춰
+            // PC 순서의 역순으로 고정 등록하되, 각 항목은 실제 Button.disabled 상태를
+            // 사용한다. 따라서 미구현 항목 이름은 바꾸지 않고 시스템이 비활성 상태를 읽는다.
             .accessibilityActions {
-                // VoiceOver의 한 손가락 아래 쓸기가 PC판 메뉴의 순방향이 되도록
-                // 등록 순서만 뒤집는다.
-                ForEach(actions.reversed()) { action in
-                    Button(action.title) { model.performRoomAction(action.kind, room: room) }
-                        .disabled(!action.isEnabled)
+                Button(roomActionTitle(.roomInfo, in: actions)) {
+                    model.performRoomAction(.roomInfo, room: room)
                 }
+                .disabled(!roomActionEnabled(.roomInfo, in: actions))
+
+                Button(roomActionTitle(.sort, in: actions)) {
+                    model.performRoomAction(.sort, room: room)
+                }
+                .disabled(!roomActionEnabled(.sort, in: actions))
+
+                Button(roomActionTitle(.spectatorEntry, in: actions)) {
+                    model.performRoomAction(.spectatorEntry, room: room)
+                }
+                .disabled(!roomActionEnabled(.spectatorEntry, in: actions))
+
+                Button(roomActionTitle(.join, in: actions)) {
+                    model.performRoomAction(.join, room: room)
+                }
+                .disabled(!roomActionEnabled(.join, in: actions))
+
+                Button(roomActionTitle(.create, in: actions)) {
+                    model.performRoomAction(.create, room: room)
+                }
+                .disabled(!roomActionEnabled(.create, in: actions))
             }
+    }
+
+    private func roomActionTitle(
+        _ kind: LobbyRoomActionKind,
+        in actions: [LobbyRoomAction]
+    ) -> String {
+        actions.first(where: { $0.kind == kind })?.title ?? ""
+    }
+
+    private func roomActionEnabled(
+        _ kind: LobbyRoomActionKind,
+        in actions: [LobbyRoomAction]
+    ) -> Bool {
+        actions.first(where: { $0.kind == kind })?.isEnabled == true
     }
 
     private func switchToUsers() {

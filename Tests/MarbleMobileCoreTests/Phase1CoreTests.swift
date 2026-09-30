@@ -1796,3 +1796,76 @@ extension Phase1CoreTests {
         ))
     }
 }
+
+
+extension Phase1CoreTests {
+    func testMainMenuDefinitionMatchesClient393StructureWithoutPCShortcuts() {
+        XCTAssertEqual(MainMenuDefinition.sections.map(\.title), ["파일", "동작", "설정"])
+        XCTAssertEqual(
+            MainMenuDefinition.sections[0].groups,
+            [
+                [.login, .logout],
+                [.notes, .friends, .ranking, .gameRecords],
+                [.exit, .leaveRoom],
+            ]
+        )
+        XCTAssertEqual(
+            MainMenuDefinition.sections[1].groups,
+            [[.startGame, .showLobby, .participateRoom, .roomInfo, .myProfile, .roomManagement]]
+        )
+        XCTAssertEqual(
+            MainMenuDefinition.sections[2].groups,
+            [[.mediaManagement], [.receiveSettings]]
+        )
+
+        let allTitles = MainMenuDefinition.sections.flatMap(\.groups).flatMap { $0 }.map(MainMenuDefinition.title)
+        XCTAssertEqual(
+            allTitles,
+            [
+                "로그인", "로그아웃",
+                "쪽지함", "친구 관리", "순위 보기", "게임 기록",
+                "종료", "퇴장",
+                "게임 시작", "대기실 열기", "게임방 참여", "방 정보", "내 정보", "방 관리",
+                "미디어 관리", "수신 설정",
+            ]
+        )
+        XCTAssertFalse(allTitles.contains { $0.contains("F4") || $0.contains("Ctrl") || $0.contains("Alt") || $0.contains("&") })
+    }
+}
+
+extension Phase1CoreTests {
+    func testLobbyUserMenuKeepsClient393OrderWhileMobileUnimplementedActionsAreDisabled() {
+        let state = SocialState(friends: [.init(userID: 2, nickname: "강")])
+        let actions = LobbyActionBuilder.userActions(
+            targetUserID: 2,
+            currentUserID: 1,
+            socialState: state,
+            hasGameRoom: true,
+            isSpectator: false,
+            messageImplemented: false,
+            noteImplemented: false,
+            roomInvitationImplemented: false,
+            spectatorInvitationImplemented: false,
+            socialInteractionImplemented: false
+        )
+
+        XCTAssertEqual(
+            actions.map(\.title),
+            ["메시지 보내기", "쪽지 보내기", "초대하기", "관중석으로 초대", "친구 해제", "차단", "사용자 정보"]
+        )
+        XCTAssertEqual(actions.map(\.isEnabled), [false, false, false, false, false, false, true])
+    }
+
+    func testLobbyRoomMenuKeepsAllClient393ItemsWithCurrentImplementationState() {
+        let actions = LobbyActionBuilder.roomActions(
+            roomCreationImplemented: true,
+            roomJoinImplemented: true,
+            spectatorInteractionImplemented: false
+        )
+        XCTAssertEqual(
+            actions.map(\.title),
+            ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"]
+        )
+        XCTAssertEqual(actions.map(\.isEnabled), [true, true, false, false, true])
+    }
+}

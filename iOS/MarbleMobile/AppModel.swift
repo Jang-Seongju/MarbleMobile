@@ -1711,6 +1711,11 @@ final class AppModel: ObservableObject {
         socket.send(WireMessages.leaveRoom())
     }
 
+    func openMyProfile() {
+        guard let userID = session?.identity.userID else { return }
+        Task { await loadProfile(userID: userID) }
+    }
+
     private func loadProfile(userID: Int) async {
         guard let currentSession = session else { return }
         do {

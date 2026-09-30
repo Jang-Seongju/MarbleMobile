@@ -194,27 +194,11 @@ struct GameRoomView: View {
 
     private var topControls: some View {
         HStack(spacing: 8) {
-            Menu("메뉴") {
-                if let room = model.roomEntry {
-                    Text("방 번호: \(room.roomID)")
-                    Text("최대 인원: \(room.maxPlayers)명")
-                    Text(room.isPrivate ? "비공개 방" : "공개 방")
-                }
-
-                Divider()
-
-                Button("메시지 진단 로그 초기화") {
-                    GameMessageDiagnosticLog.shared.reset()
-                    model.announce("메시지 진단 로그를 초기화했습니다.")
-                }
-
-                Button("메시지 진단 로그 복사") {
-                    GameMessageDiagnosticLog.shared.record("USER requested diagnostic copy")
-                    GameMessageDiagnosticLog.shared.snapshotCurrent("USER_COPY_CURRENT")
-                    UIPasteboard.general.string = GameMessageDiagnosticLog.shared.exportText()
-                    model.announce("메시지 진단 로그를 클립보드에 복사했습니다.")
-                }
-            }
+            MobileMainMenu(
+                context: .gameRoom,
+                onLeaveRoom: { showLeaveConfirmation = true }
+            )
+            .environmentObject(model)
 
             Button("대기실 보기") { model.showLobbyFromGameRoom() }
 

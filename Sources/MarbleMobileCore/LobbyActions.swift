@@ -41,31 +41,42 @@ public enum LobbyActionBuilder {
         hasGameRoom: Bool,
         isSpectator: Bool,
         messageImplemented: Bool = true,
-        noteImplemented: Bool = true
+        noteImplemented: Bool = true,
+        roomInvitationImplemented: Bool = true,
+        spectatorInvitationImplemented: Bool = true,
+        socialInteractionImplemented: Bool = true
     ) -> [LobbyUserAction] {
         let isSelf = targetUserID == currentUserID
         var actions: [LobbyUserAction] = [
             .init(kind: .message, title: "메시지 보내기", isEnabled: messageImplemented),
             .init(kind: .note, title: "쪽지 보내기", isEnabled: !isSelf && noteImplemented),
-            .init(kind: .roomInvite, title: "초대하기", isEnabled: !isSelf && hasGameRoom && !isSpectator),
-            .init(kind: .spectatorInvite, title: "관중석으로 초대", isEnabled: !isSelf && hasGameRoom),
+            .init(
+                kind: .roomInvite,
+                title: "초대하기",
+                isEnabled: !isSelf && hasGameRoom && !isSpectator && roomInvitationImplemented
+            ),
+            .init(
+                kind: .spectatorInvite,
+                title: "관중석으로 초대",
+                isEnabled: !isSelf && hasGameRoom && spectatorInvitationImplemented
+            ),
         ]
 
         if !isSelf {
             if socialState.isBlocked(targetUserID) {
-                actions.append(.init(kind: .unblock, title: "차단 해제"))
+                actions.append(.init(kind: .unblock, title: "차단 해제", isEnabled: socialInteractionImplemented))
             } else if socialState.isFriend(targetUserID) {
-                actions.append(.init(kind: .unfriend, title: "친구 해제"))
-                actions.append(.init(kind: .block, title: "차단"))
+                actions.append(.init(kind: .unfriend, title: "친구 해제", isEnabled: socialInteractionImplemented))
+                actions.append(.init(kind: .block, title: "차단", isEnabled: socialInteractionImplemented))
             } else if socialState.incomingRequest(for: targetUserID) != nil {
-                actions.append(.init(kind: .friendAccept, title: "친구 요청 수락"))
-                actions.append(.init(kind: .block, title: "차단"))
+                actions.append(.init(kind: .friendAccept, title: "친구 요청 수락", isEnabled: socialInteractionImplemented))
+                actions.append(.init(kind: .block, title: "차단", isEnabled: socialInteractionImplemented))
             } else if socialState.outgoingRequest(for: targetUserID) != nil {
-                actions.append(.init(kind: .friendCancel, title: "요청 취소"))
-                actions.append(.init(kind: .block, title: "차단"))
+                actions.append(.init(kind: .friendCancel, title: "요청 취소", isEnabled: socialInteractionImplemented))
+                actions.append(.init(kind: .block, title: "차단", isEnabled: socialInteractionImplemented))
             } else {
-                actions.append(.init(kind: .friendRequest, title: "친구 요청"))
-                actions.append(.init(kind: .block, title: "차단"))
+                actions.append(.init(kind: .friendRequest, title: "친구 요청", isEnabled: socialInteractionImplemented))
+                actions.append(.init(kind: .block, title: "차단", isEnabled: socialInteractionImplemented))
             }
         }
         actions.append(.init(kind: .profile, title: "사용자 정보"))
