@@ -36,8 +36,8 @@ struct GameRoomView: View {
                         : model.isBoardDirectTouchAreaAvailable,
                     accessibilityFocusRequest: boardAccessibilityFocusRequest,
                     directTouchHint: isInteractionBoardInspectionActive
-                        ? "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 한 손가락 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다."
-                        : "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 두 번 탭하면 표준 VoiceOver로 전환합니다.",
+                        ? "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 다이렉트 터치 중 한 손가락 세 번 탭하면 현재 도시 통행료를 조회하고, 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다."
+                        : "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 세 번 탭하면 현재 도시 통행료를 조회하고, 두 번 탭하면 표준 VoiceOver로 전환합니다.",
                     onExitDirectTouchOverride: isInteractionBoardInspectionActive
                         ? focusReturnToInteractionAfterDirectTouch
                         : focusPrimaryActionAfterDirectTouch,
@@ -63,7 +63,9 @@ struct GameRoomView: View {
                             }
                         }
                     },
+                    onAccessibilityFocus: model.resetGameRotorForBoardAccessibilityFocus,
                     onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
+                    onCurrentCityToll: model.requestCurrentCityToll,
                     onRotorForward: model.rotateGameRotorForward,
                     onRotorBackward: model.rotateGameRotorBackward,
                     onPreviousRotorSelection: model.moveGameRotorSelectionBackward,
@@ -351,7 +353,9 @@ struct GameBoardShell: View {
     let onMoveDown: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
+    let onAccessibilityFocus: () -> Void
     let onSelectedPlayerInfo: () -> Void
+    let onCurrentCityToll: () -> Void
     let onRotorForward: () -> Void
     let onRotorBackward: () -> Void
     let onPreviousRotorSelection: () -> Void
@@ -400,7 +404,9 @@ struct GameBoardShell: View {
                         },
                         onMagicTap: onMagicTap,
                         onEscape: onEscape,
+                        onAccessibilityFocus: onAccessibilityFocus,
                         onSelectedPlayerInfo: onSelectedPlayerInfo,
+                        onCurrentCityToll: onCurrentCityToll,
                         onRotorForward: onRotorForward,
                         onRotorBackward: onRotorBackward,
                         onPreviousRotorSelection: onPreviousRotorSelection,

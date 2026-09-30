@@ -1297,16 +1297,25 @@ extension Phase1CoreTests {
 
     func testGameRotorCategoryAndChildCyclesAreDeterministic() {
         var rotor = GameRotorState()
-        XCTAssertEqual(rotor.category, .cityInformation)
-        XCTAssertEqual(rotor.moveCategoryForward(), .playerInformation)
+        XCTAssertEqual(rotor.category, .playerInformation)
+        XCTAssertEqual(GameRotorCategory.allCases.map(\.displayName), [
+            "플레이어 정보",
+            "독점 정보",
+            "도시 상태",
+            "건물별 비용",
+            "비용 및 설명",
+            "플레이어 위치",
+        ])
         XCTAssertEqual(rotor.moveCategoryForward(), .monopolyInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .cityStatusInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .unitCostInformation)
-        XCTAssertEqual(rotor.moveCategoryForward(), .playerPositionInformation)
         XCTAssertEqual(rotor.moveCategoryForward(), .cityInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .playerPositionInformation)
+        XCTAssertEqual(rotor.moveCategoryForward(), .playerInformation)
         XCTAssertEqual(rotor.moveCategoryBackward(), .playerPositionInformation)
 
         rotor.reset()
+        XCTAssertEqual(rotor.category, .playerInformation)
         XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .toll)
         XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .acquisition)
         XCTAssertEqual(rotor.moveCityInformationKind(forward: true), .sale)
@@ -1867,5 +1876,19 @@ extension Phase1CoreTests {
             ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"]
         )
         XCTAssertEqual(actions.map(\.isEnabled), [true, true, false, false, true])
+    }
+
+    func testLobbyRoomMenuKeepsSameCanonicalItemsWithoutRoomTarget() {
+        let actions = LobbyActionBuilder.roomActions(
+            roomCreationImplemented: true,
+            roomJoinImplemented: true,
+            spectatorInteractionImplemented: false,
+            hasRoomTarget: false
+        )
+        XCTAssertEqual(
+            actions.map(\.title),
+            ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"]
+        )
+        XCTAssertEqual(actions.map(\.isEnabled), [true, false, false, false, false])
     }
 }

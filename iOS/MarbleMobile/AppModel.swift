@@ -468,7 +468,7 @@ final class AppModel: ObservableObject {
             return
         }
         boardCursor.jump(to: target.index)
-        gameRotor.resetBoardCellSelections()
+        resetGameRotorForBoardFocusChange()
         if target.isCorner {
             boardCornerFeedback.prepare()
             boardCornerFeedback.impactOccurred()
@@ -572,8 +572,20 @@ final class AppModel: ObservableObject {
             return
         }
         boardCursor.jump(to: target)
-        gameRotor.resetBoardCellSelections()
+        resetGameRotorForBoardFocusChange()
         announceCurrentBoardCell()
+    }
+
+    /// VoiceOver 표준 로터와 같은 사용 감각을 유지하기 위해 보드에서 접근성
+    /// 대상이 바뀌면 Game Rotor를 기본 항목(플레이어 정보)으로 되돌린다.
+    /// 플레이어 로터의 기본 대상도 항상 본인이 되도록 같은 경계에서 동기화한다.
+    private func resetGameRotorForBoardFocusChange() {
+        gameRotor.reset()
+        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+    }
+
+    func resetGameRotorForBoardAccessibilityFocus() {
+        resetGameRotorForBoardFocusChange()
     }
 
     func rotateGameRotorForward() {
@@ -605,7 +617,7 @@ final class AppModel: ObservableObject {
     private func moveGameRotorSelection(forward: Bool) {
         switch gameRotor.category {
         case .cityInformation:
-            announce("도시 정보는 두 손가락 위아래 쓸기로 조회합니다.")
+            announce("비용 및 설명은 두 손가락 위아래 쓸기로 조회합니다.")
         case .playerInformation:
             guard let target = gameRotor.movePlayerTarget(
                 forward: forward,
@@ -768,11 +780,21 @@ final class AppModel: ObservableObject {
     }
 
     private func requestRotorCityInformation(forward: Bool) {
+        requestCurrentCityInformation(gameRotor.moveCityInformationKind(forward: forward))
+    }
+
+    /// 로터 상태와 무관하게 현재 선택 도시의 통행료를 조회하는 전역 보드 동작.
+    /// 기존 비용 및 설명 로터가 사용하는 city_cost/toll 경로를 그대로 재사용하며
+    /// 로터의 현재 범주/하위 선택은 변경하지 않는다.
+    func requestCurrentCityToll() {
+        requestCurrentCityInformation(.toll)
+    }
+
+    private func requestCurrentCityInformation(_ kind: GameRotorCityInformationKind) {
         guard let cell = currentBoardCell, cell.isCity, let cityID = cell.cityID else {
             announce("도시가 아닙니다")
             return
         }
-        let kind = gameRotor.moveCityInformationKind(forward: forward)
         if kind == .description {
             if gameIsActive || gameFinished {
                 socket.send(WireMessages.informationQuery(queryType: "city_description", cityID: cityID))
@@ -1236,7 +1258,7 @@ final class AppModel: ObservableObject {
                   let index = WireScalarParser.exactInt(payload["to_index"]), (1...32).contains(index),
                   playerID == myPlayerID {
             boardCursor.jump(to: index)
-                gameRotor.resetBoardCellSelections()
+            resetGameRotorForBoardFocusChange()
         }
 
         let context = GamePresentationContext(
@@ -1607,7 +1629,7 @@ final class AppModel: ObservableObject {
         if let player = gamePlayers.first(where: { $0.playerID == playerID }),
            boardCatalog?.cell(at: player.position) != nil {
             boardCursor.jump(to: player.position)
-            gameRotor.resetBoardCellSelections()
+            resetGameRotorForBoardFocusChange()
         }
 
         return InformationResultPresenter.format(
@@ -1677,7 +1699,7 @@ final class AppModel: ObservableObject {
               let index = boardCatalog?.cells.first(where: { $0.cityID == cityID })?.index
         else { return }
         boardCursor.jump(to: index)
-        gameRotor.resetBoardCellSelections()
+        resetGameRotorForBoardFocusChange()
     }
 
     func createTeamFromDraft() {
@@ -2180,8 +2202,10 @@ final class AppModel: ObservableObject {
             staticInformationCatalog = snapshot.staticInformation
             if snapshot.boardCatalog.cell(at: boardCursor.index) == nil {
                 boardCursor.reset()
-            }
+                resetGameRotorForBoardFocusChange()
+            } else {
                 gameRotor.resetBoardCellSelections()
+            }
         } catch {
             // PC 일반 room 경로와 같이 malformed 정적 보드는 기존 정상 상태를
             // 임의 데이터로 덮어쓰지 않고 무시한다.

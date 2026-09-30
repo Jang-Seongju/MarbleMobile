@@ -87,14 +87,15 @@ public enum LobbyActionBuilder {
     public static func roomActions(
         roomCreationImplemented: Bool,
         roomJoinImplemented: Bool,
-        spectatorInteractionImplemented: Bool
+        spectatorInteractionImplemented: Bool,
+        hasRoomTarget: Bool = true
     ) -> [LobbyRoomAction] {
         [
             .init(kind: .create, title: "방 개설", isEnabled: roomCreationImplemented),
-            .init(kind: .join, title: "참여하기", isEnabled: roomJoinImplemented),
-            .init(kind: .spectatorEntry, title: "관중석 입장", isEnabled: spectatorInteractionImplemented),
+            .init(kind: .join, title: "참여하기", isEnabled: hasRoomTarget && roomJoinImplemented),
+            .init(kind: .spectatorEntry, title: "관중석 입장", isEnabled: hasRoomTarget && spectatorInteractionImplemented),
             .init(kind: .sort, title: "방 정렬", isEnabled: false),
-            .init(kind: .roomInfo, title: "방 정보"),
+            .init(kind: .roomInfo, title: "방 정보", isEnabled: hasRoomTarget),
         ]
     }
 

@@ -1,20 +1,20 @@
 import Foundation
 
 public enum GameRotorCategory: Int, CaseIterable, Equatable, Sendable {
-    case cityInformation
     case playerInformation
     case monopolyInformation
     case cityStatusInformation
     case unitCostInformation
+    case cityInformation
     case playerPositionInformation
 
     public var displayName: String {
         switch self {
-        case .cityInformation: return "도시 정보"
         case .playerInformation: return "플레이어 정보"
         case .monopolyInformation: return "독점 정보"
         case .cityStatusInformation: return "도시 상태"
         case .unitCostInformation: return "건물별 비용"
+        case .cityInformation: return "비용 및 설명"
         case .playerPositionInformation: return "플레이어 위치"
         }
     }
@@ -102,7 +102,7 @@ public enum GameRotorUnitValueKind: Int, CaseIterable, Equatable, Sendable {
 }
 
 public struct GameRotorState: Equatable, Sendable {
-    public private(set) var category: GameRotorCategory = .cityInformation
+    public private(set) var category: GameRotorCategory = .playerInformation
     public private(set) var cityInformationKind: GameRotorCityInformationKind = .toll
     public private(set) var playerTarget: GameRotorPlayerTarget?
     public private(set) var playerPositionPlayerID: Int?

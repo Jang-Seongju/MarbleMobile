@@ -15,7 +15,9 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     let onExitDirectTouch: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
+    let onAccessibilityFocus: () -> Void
     let onSelectedPlayerInfo: () -> Void
+    let onCurrentCityToll: () -> Void
     let onRotorForward: () -> Void
     let onRotorBackward: () -> Void
     let onPreviousRotorSelection: () -> Void
@@ -67,12 +69,21 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         addSwipe(.up, touches: 3, selector: #selector(Coordinator.lineC), to: view, coordinator: context.coordinator)
         addSwipe(.down, touches: 3, selector: #selector(Coordinator.lineA), to: view, coordinator: context.coordinator)
 
+        // 로터 상태와 무관한 전역 통행료 조회. Direct Touch에서는 원시 터치가
+        // 앱으로 전달되므로 한 손가락 세 번 탭을 안정적으로 구분할 수 있다.
+        let tollTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.currentCityToll))
+        tollTap.numberOfTouchesRequired = 1
+        tollTap.numberOfTapsRequired = 3
+        view.addGestureRecognizer(tollTap)
+
         // 시스템 Direct Touch를 끄기 어려운 상황의 안전한 탈출 경로.
         // 앱 모드를 토글하지 않고 VoiceOver 포커스를 다른 요소로 이동시켜
         // 시스템 Direct Touch의 "포커스가 떠나면 종료" 계약을 사용한다.
         let exitTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.exitDirectTouch))
         exitTap.numberOfTouchesRequired = 1
         exitTap.numberOfTapsRequired = 2
+        // 세 번 탭을 두 번 탭 탈출로 먼저 오인하지 않도록 triple-tap 판정을 우선한다.
+        exitTap.require(toFail: tollTap)
         view.addGestureRecognizer(exitTap)
 
         let magicTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.magicTap(_:)))
@@ -125,7 +136,11 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         }
 
         var callbacks: DirectTouchBoardView.Callbacks {
-            .init(onMagicTap: parent.onMagicTap, onEscape: parent.onEscape)
+            .init(
+                onMagicTap: parent.onMagicTap,
+                onEscape: parent.onEscape,
+                onAccessibilityFocus: parent.onAccessibilityFocus
+            )
         }
 
         func applyAccessibilityFocusRequest(to view: DirectTouchBoardView) {
@@ -144,6 +159,7 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         @objc func moveDown() { parent.onMoveDown() }
         @objc func exitDirectTouch() { parent.onExitDirectTouch() }
         @objc func selectedPlayerInfo() { parent.onSelectedPlayerInfo() }
+        @objc func currentCityToll() { parent.onCurrentCityToll() }
         @objc func lineA() { parent.onLineA() }
         @objc func lineB() { parent.onLineB() }
         @objc func lineC() { parent.onLineC() }
@@ -207,6 +223,7 @@ final class DirectTouchBoardView: UIView {
     struct Callbacks {
         let onMagicTap: () -> Void
         let onEscape: () -> Void
+        let onAccessibilityFocus: () -> Void
     }
 
     var callbacks: Callbacks?
@@ -220,6 +237,11 @@ final class DirectTouchBoardView: UIView {
     override func accessibilityPerformEscape() -> Bool {
         callbacks?.onEscape()
         return true
+    }
+
+    override func accessibilityElementDidBecomeFocused() {
+        super.accessibilityElementDidBecomeFocused()
+        callbacks?.onAccessibilityFocus()
     }
 
     func performMagicTapOnce() {
