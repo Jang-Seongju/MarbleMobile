@@ -1891,4 +1891,42 @@ extension Phase1CoreTests {
         )
         XCTAssertEqual(actions.map(\.isEnabled), [true, false, false, false, false])
     }
+    func testGameRotorBoardCellResetPreservesCategoryTargetAndTraversalContext() {
+        let players = [1, 2].map { id in
+            GamePlayerSnapshot(
+                playerID: id,
+                userID: id,
+                nickname: id == 1 ? "나" : "상대",
+                teamName: id == 1 ? "나" : "상대",
+                marble: 2_000_000,
+                position: id,
+                lapCount: 0,
+                isStranded: false,
+                isBankrupt: false,
+                isAI: false
+            )
+        }
+        var rotor = GameRotorState()
+        rotor.synchronizePlayers(myPlayerID: 1, players: players)
+        XCTAssertEqual(rotor.category, .playerInformation)
+        XCTAssertEqual(rotor.movePlayerTarget(forward: true, myPlayerID: 1, players: players), .player(2))
+        XCTAssertEqual(rotor.nextOpponentCityIndex(forward: true), 0)
+
+        _ = rotor.moveCategoryForward() // 독점 정보
+        _ = rotor.moveCategoryForward() // 도시 상태
+        _ = rotor.moveCategoryForward() // 건물별 비용
+        _ = rotor.moveCategoryForward() // 비용 및 설명
+        XCTAssertEqual(rotor.category, .cityInformation)
+        _ = rotor.moveCityInformationKind(forward: true)
+        _ = rotor.moveUnitBuildingType(forward: true, availableTypes: ["villa", "building"])
+
+        rotor.resetBoardCellSelections()
+
+        XCTAssertEqual(rotor.category, .cityInformation)
+        XCTAssertEqual(rotor.playerTarget, .player(2))
+        XCTAssertEqual(rotor.nextOpponentCityIndex(forward: true), 1)
+        XCTAssertEqual(rotor.cityInformationKind, .toll)
+        XCTAssertNil(rotor.unitBuildingType)
+    }
+
 }

@@ -15,7 +15,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     let onExitDirectTouch: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
-    let onAccessibilityFocus: () -> Void
     let onSelectedPlayerInfo: () -> Void
     let onCurrentCityToll: () -> Void
     let onRotorForward: () -> Void
@@ -136,11 +135,7 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         }
 
         var callbacks: DirectTouchBoardView.Callbacks {
-            .init(
-                onMagicTap: parent.onMagicTap,
-                onEscape: parent.onEscape,
-                onAccessibilityFocus: parent.onAccessibilityFocus
-            )
+            .init(onMagicTap: parent.onMagicTap, onEscape: parent.onEscape)
         }
 
         func applyAccessibilityFocusRequest(to view: DirectTouchBoardView) {
@@ -223,8 +218,7 @@ final class DirectTouchBoardView: UIView {
     struct Callbacks {
         let onMagicTap: () -> Void
         let onEscape: () -> Void
-        let onAccessibilityFocus: () -> Void
-    }
+        }
 
     var callbacks: Callbacks?
     private var lastMagicTapTime: CFTimeInterval = 0
@@ -237,11 +231,6 @@ final class DirectTouchBoardView: UIView {
     override func accessibilityPerformEscape() -> Bool {
         callbacks?.onEscape()
         return true
-    }
-
-    override func accessibilityElementDidBecomeFocused() {
-        super.accessibilityElementDidBecomeFocused()
-        callbacks?.onAccessibilityFocus()
     }
 
     func performMagicTapOnce() {

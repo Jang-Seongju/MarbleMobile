@@ -468,7 +468,7 @@ final class AppModel: ObservableObject {
             return
         }
         boardCursor.jump(to: target.index)
-        resetGameRotorForBoardFocusChange()
+        gameRotor.resetBoardCellSelections()
         if target.isCorner {
             boardCornerFeedback.prepare()
             boardCornerFeedback.impactOccurred()
@@ -572,20 +572,8 @@ final class AppModel: ObservableObject {
             return
         }
         boardCursor.jump(to: target)
-        resetGameRotorForBoardFocusChange()
+        gameRotor.resetBoardCellSelections()
         announceCurrentBoardCell()
-    }
-
-    /// VoiceOver 표준 로터와 같은 사용 감각을 유지하기 위해 보드에서 접근성
-    /// 대상이 바뀌면 Game Rotor를 기본 항목(플레이어 정보)으로 되돌린다.
-    /// 플레이어 로터의 기본 대상도 항상 본인이 되도록 같은 경계에서 동기화한다.
-    private func resetGameRotorForBoardFocusChange() {
-        gameRotor.reset()
-        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
-    }
-
-    func resetGameRotorForBoardAccessibilityFocus() {
-        resetGameRotorForBoardFocusChange()
     }
 
     func rotateGameRotorForward() {
@@ -1258,7 +1246,7 @@ final class AppModel: ObservableObject {
                   let index = WireScalarParser.exactInt(payload["to_index"]), (1...32).contains(index),
                   playerID == myPlayerID {
             boardCursor.jump(to: index)
-            resetGameRotorForBoardFocusChange()
+            gameRotor.resetBoardCellSelections()
         }
 
         let context = GamePresentationContext(
@@ -1629,7 +1617,7 @@ final class AppModel: ObservableObject {
         if let player = gamePlayers.first(where: { $0.playerID == playerID }),
            boardCatalog?.cell(at: player.position) != nil {
             boardCursor.jump(to: player.position)
-            resetGameRotorForBoardFocusChange()
+            gameRotor.resetBoardCellSelections()
         }
 
         return InformationResultPresenter.format(
@@ -1699,7 +1687,7 @@ final class AppModel: ObservableObject {
               let index = boardCatalog?.cells.first(where: { $0.cityID == cityID })?.index
         else { return }
         boardCursor.jump(to: index)
-        resetGameRotorForBoardFocusChange()
+        gameRotor.resetBoardCellSelections()
     }
 
     func createTeamFromDraft() {
@@ -2202,10 +2190,8 @@ final class AppModel: ObservableObject {
             staticInformationCatalog = snapshot.staticInformation
             if snapshot.boardCatalog.cell(at: boardCursor.index) == nil {
                 boardCursor.reset()
-                resetGameRotorForBoardFocusChange()
-            } else {
-                gameRotor.resetBoardCellSelections()
             }
+            gameRotor.resetBoardCellSelections()
         } catch {
             // PC 일반 room 경로와 같이 malformed 정적 보드는 기존 정상 상태를
             // 임의 데이터로 덮어쓰지 않고 무시한다.

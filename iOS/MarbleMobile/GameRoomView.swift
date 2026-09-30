@@ -63,7 +63,6 @@ struct GameRoomView: View {
                             }
                         }
                     },
-                    onAccessibilityFocus: model.resetGameRotorForBoardAccessibilityFocus,
                     onSelectedPlayerInfo: model.requestSelectedPlayerInfo,
                     onCurrentCityToll: model.requestCurrentCityToll,
                     onRotorForward: model.rotateGameRotorForward,
@@ -353,7 +352,6 @@ struct GameBoardShell: View {
     let onMoveDown: () -> Void
     let onMagicTap: () -> Void
     let onEscape: () -> Void
-    let onAccessibilityFocus: () -> Void
     let onSelectedPlayerInfo: () -> Void
     let onCurrentCityToll: () -> Void
     let onRotorForward: () -> Void
@@ -404,7 +402,6 @@ struct GameBoardShell: View {
                         },
                         onMagicTap: onMagicTap,
                         onEscape: onEscape,
-                        onAccessibilityFocus: onAccessibilityFocus,
                         onSelectedPlayerInfo: onSelectedPlayerInfo,
                         onCurrentCityToll: onCurrentCityToll,
                         onRotorForward: onRotorForward,

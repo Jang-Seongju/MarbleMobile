@@ -244,8 +244,10 @@ struct LobbyView: View {
         isEnabled: KeyPath<Action, Bool>,
         perform: @escaping (Action) -> Void
     ) -> some View {
-        // Action 배열이 메뉴의 유일한 순서 원천이다. UI 계층에서 역순 보정을 하지 않는다.
-        ForEach(actions) { action in
+        // LobbyActionBuilder 배열은 메뉴의 canonical 순방향이다.
+        // 실기기 VoiceOver는 SwiftUI accessibilityActions를 등록 역순으로 탐색하므로
+        // 이 공통 어댑터에서만 한 번 역순 등록해 아래=canonical 순방향, 위=역방향으로 맞춘다.
+        ForEach(actions.reversed()) { action in
             Button(action[keyPath: title]) {
                 perform(action)
             }
