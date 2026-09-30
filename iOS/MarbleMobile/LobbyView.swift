@@ -31,8 +31,8 @@ struct LobbyView: View {
             .navigationTitle("마블 게임 - 대기실")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    if model.isInGameRoom {
-                        Button("게임방 보기") { model.showGameRoom() }
+                    if model.canShowGameRoom {
+                        Button(model.isSpectating ? "관중석 보기" : "게임방 보기") { model.showGameRoom() }
                     }
                     MobileMainMenu(
                         context: .lobby,
@@ -54,6 +54,25 @@ struct LobbyView: View {
             )) {
                 RoomJoinView()
                     .environmentObject(model)
+            }
+            .sheet(isPresented: Binding(
+                get: { model.pendingSpectatorTargetList != nil || model.pendingSpectatorPasswordTarget != nil },
+                set: { presented in
+                    guard !presented else { return }
+                    if model.spectatorPhase == .targetSelection {
+                        model.cancelSpectatorTargetSelection()
+                    } else if model.spectatorPhase == .passwordEntry {
+                        model.cancelSpectatorPassword()
+                    }
+                }
+            )) {
+                if let targetList = model.pendingSpectatorTargetList {
+                    SpectatorTargetSelectionView(targetList: targetList)
+                        .environmentObject(model)
+                } else if let target = model.pendingSpectatorPasswordTarget {
+                    SpectatorPasswordView(target: target)
+                        .environmentObject(model)
+                }
             }
             .alert("알림", isPresented: Binding(
                 get: { model.alertMessage != nil },
@@ -144,7 +163,7 @@ struct LobbyView: View {
             currentUserID: model.session?.identity.userID ?? -1,
             socialState: model.socialState,
             hasGameRoom: model.isInGameRoom,
-            isSpectator: false,
+            isSpectator: model.isSpectating,
             messageImplemented: false,
             noteImplemented: false,
             roomInvitationImplemented: false,
@@ -188,11 +207,20 @@ struct LobbyView: View {
 
     @ViewBuilder
     private func roomRow(_ room: GameRoomSummary) -> some View {
-        let roomActionsAvailable = !model.isInGameRoom && !model.isRoomCreationPending && !model.isRoomJoinPending
+        let roomActionsAvailable = !model.isInGameRoom
+            && model.spectatorPhase == .idle
+            && !model.isRoomCreationPending
+            && !model.isRoomJoinPending
+        let spectatorActionAvailable = !model.isRoomCreationPending
+            && !model.isRoomJoinPending
+            && (
+                (!model.isInGameRoom && model.spectatorPhase == .idle)
+                || (model.isSpectating && model.spectatorPhase == .active)
+            )
         let actions = LobbyActionBuilder.roomActions(
             roomCreationImplemented: roomActionsAvailable,
             roomJoinImplemented: roomActionsAvailable,
-            spectatorInteractionImplemented: false
+            spectatorInteractionImplemented: spectatorActionAvailable
         )
 
         Text(PresenceFormatter.roomLabel(room))
@@ -217,11 +245,14 @@ struct LobbyView: View {
     }
 
     private var emptyRoomRow: some View {
-        let roomActionsAvailable = !model.isInGameRoom && !model.isRoomCreationPending && !model.isRoomJoinPending
+        let roomActionsAvailable = !model.isInGameRoom
+            && model.spectatorPhase == .idle
+            && !model.isRoomCreationPending
+            && !model.isRoomJoinPending
         let actions = LobbyActionBuilder.roomActions(
             roomCreationImplemented: roomActionsAvailable,
             roomJoinImplemented: roomActionsAvailable,
-            spectatorInteractionImplemented: false,
+            spectatorInteractionImplemented: roomActionsAvailable,
             hasRoomTarget: false
         )
 

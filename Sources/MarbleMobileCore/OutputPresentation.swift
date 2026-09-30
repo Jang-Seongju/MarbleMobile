@@ -85,26 +85,38 @@ public struct PresentationPlan: Equatable, Sendable {
 public typealias GameCityStateSnapshot = InformationInfo
 
 public struct GamePresentationContext: Equatable, Sendable {
+    /// 실제 참가자로서의 자기 player_id. 관전자는 항상 nil이다.
     public let localPlayerID: Int?
+    /// 청각적 게임 관점. 참가자는 localPlayerID, 관전자는 관전 대상의 현재 player_id다.
+    public let presentationPlayerID: Int?
     public let players: [GamePlayerSnapshot]
     public let boardCatalog: BoardCatalogSnapshot?
     public let cities: [GameCityStateSnapshot]
 
     public init(
         localPlayerID: Int?,
+        presentationPlayerID: Int? = nil,
         players: [GamePlayerSnapshot],
         boardCatalog: BoardCatalogSnapshot?,
         cities: [GameCityStateSnapshot] = []
     ) {
         self.localPlayerID = localPlayerID
+        self.presentationPlayerID = presentationPlayerID ?? localPlayerID
         self.players = players
         self.boardCatalog = boardCatalog
         self.cities = cities
     }
 
+    /// 참가자 전용 자기 지칭("당신", 생략 주어) 판정.
     public func isLocal(_ playerID: Int?) -> Bool {
         guard let playerID, let localPlayerID else { return false }
         return playerID == localPlayerID
+    }
+
+    /// SFX/Voice/BGM을 결정하는 게임 체감 관점 판정.
+    public func isPresentation(_ playerID: Int?) -> Bool {
+        guard let playerID, let presentationPlayerID else { return false }
+        return playerID == presentationPlayerID
     }
 
     public func playerName(_ playerID: Int?, mine: String = "당신") -> String {
@@ -256,7 +268,7 @@ public enum GameNotificationPresenter {
         if c.boardCatalog?.cell(at: index)?.cellType == "FORTUNE_CARD" {
             nodes.append(.voice(clip: "fortune_card.wav", fallbackTTS: nil))
         }
-        if c.isLocal(playerID) {
+        if c.isPresentation(playerID) {
             if c.boardCatalog?.cell(at: index)?.cellType == "WORLD_TRAVEL" {
                 nodes.append(.bgmPlay(clip: "airport_world.mp3", loop: true))
             } else {
@@ -271,8 +283,8 @@ public enum GameNotificationPresenter {
         let amount = int(p["amount"]) ?? 0
         guard amount > 0 else { return nil }
         let message = "\(c.playerName(payerID)) \(c.playerName(ownerID))에게 통행료 \(KoreanPresentationText.marble(amount)) 지불"
-        if c.isLocal(payerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_out.wav", completion: .wait), .tts(message)])) }
-        if c.isLocal(ownerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_in.wav", completion: .wait), .tts(message)])) }
+        if c.isPresentation(payerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_out.wav", completion: .wait), .tts(message)])) }
+        if c.isPresentation(ownerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_in.wav", completion: .wait), .tts(message)])) }
         return .gameEvent(message)
     }
 
@@ -290,7 +302,7 @@ public enum GameNotificationPresenter {
     private static func cityAcquired(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
         guard let playerID = int(p["player_id"]), let cityID = int(p["city_id"]) else { return nil }
         let message = "\(KoreanPresentationText.subject(c.playerName(playerID))) \(KoreanPresentationText.object(c.cityName(cityID))) 인수했습니다"
-        let reaction = c.ownerID(of: cityID) == c.localPlayerID && !c.isLocal(playerID) ? "oh_no.wav" : "acquisition.wav"
+        let reaction = c.ownerID(of: cityID) == c.presentationPlayerID && !c.isPresentation(playerID) ? "oh_no.wav" : "acquisition.wav"
         return .gameEvent(message, root: .sequence([.voice(clip: reaction, fallbackTTS: nil), .tts(message)]))
     }
 
@@ -339,7 +351,7 @@ public enum GameNotificationPresenter {
                 : "\(attacker)의 외계인 침공 공격으로 \(detail)"
             let isMine = batchItems.contains { item in
                 guard let batchCityID = int(item["city_id"]) else { return false }
-                return c.ownerID(of: batchCityID) == c.localPlayerID
+                return c.ownerID(of: batchCityID) == c.presentationPlayerID
             }
             let speech: PresentationNode = isMine
                 ? .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)])
@@ -359,7 +371,7 @@ public enum GameNotificationPresenter {
         } else {
             message = "\(city) \(label) 파괴"
         }
-        let isMine = c.ownerID(of: cityID) == c.localPlayerID
+        let isMine = c.ownerID(of: cityID) == c.presentationPlayerID
         let speech: PresentationNode = isMine ? .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)]) : .tts(message)
         let playAttackSFX = attack != nil && (p["attack_effect_primary"] == nil || bool(p["attack_effect_primary"]) == true)
         if playAttackSFX, attack == "earthquake" { return .gameEvent(message, root: .parallel([.sfx(clip: "earthquake.wav", completion: .wait), speech])) }
@@ -370,14 +382,14 @@ public enum GameNotificationPresenter {
     private static func cityDonated(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
         guard let from = int(p["from_player_id"]), let to = int(p["to_player_id"]), let city = int(p["city_id"]) else { return nil }
         let message = "\(KoreanPresentationText.subject(c.playerName(from))) \(KoreanPresentationText.object(c.cityName(city))) \(c.playerName(to))에게 기부했습니다"
-        if c.isLocal(to) { return .gameEvent(message, root: .sequence([.voice(clip: "nice.wav", fallbackTTS: nil), .tts(message)])) }
+        if c.isPresentation(to) { return .gameEvent(message, root: .sequence([.voice(clip: "nice.wav", fallbackTTS: nil), .tts(message)])) }
         return .gameEvent(message)
     }
 
     private static func cityChanged(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
         guard let a = int(p["player_a_id"]), let b = int(p["player_b_id"]), let ca = int(p["city_a_id"]), let cb = int(p["city_b_id"]) else { return nil }
         let message = "\(KoreanPresentationText.subject(c.playerName(a))) 자신의 \(KoreanPresentationText.conjunction(c.cityName(ca))) \(c.playerName(b))의 \(KoreanPresentationText.object(c.cityName(cb))) 교환했습니다"
-        if c.isLocal(b) { return .gameEvent(message, root: .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)])) }
+        if c.isPresentation(b) { return .gameEvent(message, root: .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)])) }
         return .gameEvent(message)
     }
 
@@ -387,7 +399,7 @@ public enum GameNotificationPresenter {
         let ownerName = c.playerName(owner)
         let resultSubject = c.isLocal(owner) ? "" : "\(KoreanPresentationText.subject(ownerName)) "
         let message = "\(KoreanPresentationText.subject(attackerName)) \(ownerName)의 \(KoreanPresentationText.object(c.cityName(city))) 강제 매각했습니다. \(resultSubject)매각 대금으로 \(KoreanPresentationText.object(KoreanPresentationText.marble(int(p["sell_value"])))) 받았습니다"
-        if c.isLocal(owner) { return .gameEvent(message, root: .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)])) }
+        if c.isPresentation(owner) { return .gameEvent(message, root: .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)])) }
         return .gameEvent(message)
     }
 
@@ -409,14 +421,30 @@ public enum GameNotificationPresenter {
     }
 
     private static func sponsorshipPaid(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
-        guard let payer = int(p["payer_player_id"]), let receiver = int(p["receiver_player_id"]), c.isLocal(payer) else { return nil }
-        return .gameEvent("후원금으로 \(c.playerName(receiver))에게 10만 마블을 주었습니다.")
+        guard let payer = int(p["payer_player_id"]), let receiver = int(p["receiver_player_id"]), c.isPresentation(payer) else { return nil }
+        let message: String
+        if c.isLocal(payer) {
+            message = "후원금으로 \(c.playerName(receiver))에게 10만 마블을 주었습니다."
+        } else {
+            message = "\(c.playerName(payer)) 후원금으로 \(c.playerName(receiver))에게 10만 마블을 주었습니다."
+        }
+        return .gameEvent(message)
     }
 
     private static func sponsorshipReceived(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
-        guard let receiver = int(p["receiver_player_id"]), c.isLocal(receiver) else { return nil }
+        guard let receiver = int(p["receiver_player_id"]), c.isPresentation(receiver) else { return nil }
         let amount = int(p["total_amount"]) ?? 0
-        return .gameEvent(amount <= 0 ? "받을 수 있는 후원금이 없습니다." : "후원금으로 모두에게서 10만 마블씩 받았습니다.")
+        let message: String
+        if amount <= 0 {
+            message = c.isLocal(receiver)
+                ? "받을 수 있는 후원금이 없습니다."
+                : "\(KoreanPresentationText.subject(c.playerName(receiver))) 받을 수 있는 후원금이 없습니다."
+        } else {
+            message = c.isLocal(receiver)
+                ? "후원금으로 모두에게서 10만 마블씩 받았습니다."
+                : "\(KoreanPresentationText.subject(c.playerName(receiver))) 후원금으로 모두에게서 10만 마블씩 받았습니다."
+        }
+        return .gameEvent(message)
     }
 
     private static func cityEffectActivated(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
@@ -431,7 +459,7 @@ public enum GameNotificationPresenter {
             guard bool(p["effect_batch_primary"]) == true else { return nil }
             let cities = batchCityIDs.map { c.cityName($0) }.joined(separator: ", ")
             let message = "\(causer)의 전염병 공격으로 \(cities) 통행료 50퍼센트 하락"
-            let isMine = causerID != c.localPlayerID && batchCityIDs.contains { c.ownerID(of: $0) == c.localPlayerID }
+            let isMine = causerID != c.presentationPlayerID && batchCityIDs.contains { c.ownerID(of: $0) == c.presentationPlayerID }
             let speech: PresentationNode = isMine
                 ? .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)])
                 : .tts(message)
@@ -447,7 +475,7 @@ public enum GameNotificationPresenter {
         default: message = "\(city)에 \(effectLabel(effect)) 효과가 적용됐습니다."
         }
         let isAttack = effect == "yellow_dust" || effect == "blackout" || effect == "plague"
-        let isMine = isAttack && c.ownerID(of: cityID) == c.localPlayerID && causerID != c.localPlayerID
+        let isMine = isAttack && c.ownerID(of: cityID) == c.presentationPlayerID && causerID != c.presentationPlayerID
         let speech: PresentationNode = isMine ? .sequence([.voice(clip: "oh_no.wav", fallbackTTS: nil), .tts(message)]) : .tts(message)
         if effect == "yellow_dust" { return .gameEvent(message, root: .parallel([.sfx(clip: "yellow_dust.wav", completion: .wait), speech])) }
         return .gameEvent(message, root: speech)
@@ -495,9 +523,10 @@ public enum GameNotificationPresenter {
     }
 
     private static func salaryPaid(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
-        guard let playerID = int(p["player_id"]), c.isLocal(playerID) else { return nil }
+        guard let playerID = int(p["player_id"]), c.isPresentation(playerID) else { return nil }
         let amount = KoreanPresentationText.marble(int(p["amount"]))
-        return .gameEvent((bool(p["is_doubled"]) ?? false) ? "월급 2배 \(amount) 수령" : "월급 \(amount) 수령")
+        let base = (bool(p["is_doubled"]) ?? false) ? "월급 2배 \(amount) 수령" : "월급 \(amount) 수령"
+        return .gameEvent(c.isLocal(playerID) ? base : "\(c.playerName(playerID)) \(base)")
     }
 
     private static func taxPaid(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
@@ -505,7 +534,7 @@ public enum GameNotificationPresenter {
         let suffix = ints(p["sold_city_ids"]).isEmpty ? "" : " 도시 \(ints(p["sold_city_ids"]).count)곳 매각"
         let prefix = c.isLocal(playerID) ? "" : "\(c.playerName(playerID)) "
         let message = "\(prefix)세금 \(KoreanPresentationText.marble(int(p["amount"]))) 납부\(suffix)"
-        if c.isLocal(playerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_out.wav", completion: .wait), .tts(message)])) }
+        if c.isPresentation(playerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_out.wav", completion: .wait), .tts(message)])) }
         return .gameEvent(message)
     }
 
@@ -514,8 +543,8 @@ public enum GameNotificationPresenter {
         let creditorID = int(p["creditor_id"])
         let paid = int(p["paid_amount"]) ?? 0
         let message = creditorID.map { "\(c.playerName(playerID)) 파산. \(c.playerName($0))에게 \(KoreanPresentationText.marble(paid)) 지불" } ?? "\(c.playerName(playerID)) 파산"
-        if c.isLocal(playerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "losing.wav", completion: .wait), .tts(message)])) }
-        if creditorID == c.localPlayerID && paid > 0 { return .gameEvent(message, root: .parallel([.sfx(clip: "money_in.wav", completion: .wait), .tts(message)])) }
+        if c.isPresentation(playerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "losing.wav", completion: .wait), .tts(message)])) }
+        if creditorID == c.presentationPlayerID && paid > 0 { return .gameEvent(message, root: .parallel([.sfx(clip: "money_in.wav", completion: .wait), .tts(message)])) }
         return .gameEvent(message)
     }
 
@@ -544,7 +573,7 @@ public enum GameNotificationPresenter {
         if !labels.isEmpty { message += ": \(labels.joined(separator: "/"))" }
         // client(393): 최후의 1인 패배는 파산 시 losing.wav가 이미 재생되므로
         // game_over에서 중복하지 않는다. 엔딩 독점 패배에만 이 SFX를 쓴다.
-        let sfx: String? = winnerID == c.localPlayerID ? "winning.wav" : (!achievementLabels.isEmpty ? "losing.wav" : nil)
+        let sfx: String? = winnerID == c.presentationPlayerID ? "winning.wav" : (c.presentationPlayerID != nil && winnerID != c.presentationPlayerID && !achievementLabels.isEmpty ? "losing.wav" : nil)
         var nodes: [PresentationNode] = [.bgmStop]
         if let sfx { nodes.append(.sfx(clip: sfx, completion: .wait)) }
         nodes.append(.tts(message))
@@ -554,7 +583,7 @@ public enum GameNotificationPresenter {
     private static func turnStarted(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
         guard let playerID = int(p["player_id"]), c.players.contains(where: { $0.playerID == playerID }) else { return nil }
         let message = "\(c.playerName(playerID)) 차례"
-        let speech: PresentationNode = c.isLocal(playerID) ? .voice(clip: "my_turn.wav", fallbackTTS: message) : .tts(message)
+        let speech: PresentationNode = c.isPresentation(playerID) ? .voice(clip: "my_turn.wav", fallbackTTS: message) : .tts(message)
         return .gameEvent(message, root: .parallel([.sfx(clip: "turn_end.wav", completion: .wait), speech]))
     }
 
@@ -564,7 +593,7 @@ public enum GameNotificationPresenter {
         let message: String
         if cost > 0 { message = c.isLocal(playerID) ? "세계여행 비용 \(KoreanPresentationText.marble(cost)) 지불" : "\(c.playerName(playerID)) 세계여행 비용 \(KoreanPresentationText.marble(cost)) 지불" }
         else { message = c.isLocal(playerID) ? "무료 세계여행을 시작했습니다." : "\(KoreanPresentationText.subject(c.playerName(playerID))) 무료 세계여행을 시작했습니다." }
-        if c.isLocal(playerID) { return .gameEvent(message, root: .sequence([.tts(message), .tts("다음 턴에 목적지로 이동하세요.")])) }
+        if c.isPresentation(playerID) { return .gameEvent(message, root: .sequence([.tts(message), .tts("다음 턴에 목적지로 이동하세요.")])) }
         return .gameEvent(message)
     }
 
@@ -582,9 +611,15 @@ public enum GameNotificationPresenter {
 
     private static func playerStranded(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
         guard let playerID = int(p["player_id"]) else { return nil }
-        let message = c.isLocal(playerID)
-            ? "무인도에 갇혔습니다. 3턴 안에 더블이나 보석금(H) 또는 탈출 카드(Y)로 탈출할 수 있습니다."
-            : "\(KoreanPresentationText.subject(c.playerName(playerID))) 무인도에 갇혔습니다."
+        let message: String
+        if c.isLocal(playerID) {
+            message = "무인도에 갇혔습니다. 3턴 안에 더블이나 보석금(H) 또는 탈출 카드(Y)로 탈출할 수 있습니다."
+        } else {
+            let base = "\(KoreanPresentationText.subject(c.playerName(playerID))) 무인도에 갇혔습니다."
+            message = c.isPresentation(playerID)
+                ? "\(base) 3턴 안에 더블이나 보석금(H) 또는 탈출 카드(Y)로 탈출할 수 있습니다."
+                : base
+        }
         return .gameEvent(message)
     }
 
@@ -611,7 +646,7 @@ public enum GameNotificationPresenter {
     private static func bonusReward(_ p: [String: Any], _ c: GamePresentationContext) -> PresentationPlan? {
         guard let playerID = int(p["player_id"]), let reward = int(p["reward"]), reward > 0 else { return nil }
         let message = "축하합니다!! 보상금은 \(KoreanPresentationText.marble(reward))입니다."
-        if c.isLocal(playerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_in.wav", completion: .wait), .tts(message)])) }
+        if c.isPresentation(playerID) { return .gameEvent(message, root: .parallel([.sfx(clip: "money_in.wav", completion: .wait), .tts(message)])) }
         return .gameEvent(message)
     }
 
@@ -744,8 +779,8 @@ public enum GameNotificationPresenter {
             guard let applicable = bool(payload["effect_applicable"]), applicable else { return nil }
         }
         if cardID == "move_olympic", payload.keys.contains("effect_applicable") {
-            guard let ownerID = int(payload["effect_target_owner_id"]), c.localPlayerID != nil else { return nil }
-            return ownerID == c.localPlayerID ? "nice.wav" : "oh_no.wav"
+            guard let ownerID = int(payload["effect_target_owner_id"]), c.presentationPlayerID != nil else { return nil }
+            return ownerID == c.presentationPlayerID ? "nice.wav" : "oh_no.wav"
         }
         let nice: Set<String> = [
             "angel_1", "angel_2", "shield_1", "shield_2", "discount_coupon_1", "discount_coupon_2",

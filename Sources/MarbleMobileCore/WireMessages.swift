@@ -14,6 +14,31 @@ public enum WireMessages {
         ["type": "leave_room"]
     }
 
+    public static func getSpectatorTargets(roomID: Int) -> [String: Any] {
+        ["type": "get_spectator_targets", "room_id": roomID]
+    }
+
+    public static func joinSpectator(
+        roomID: Int,
+        observedUserID: Int,
+        password: String? = nil
+    ) -> [String: Any] {
+        var message: [String: Any] = [
+            "type": "join_spectator",
+            "room_id": roomID,
+            "observed_user_id": observedUserID,
+        ]
+        if let password {
+            let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { message["password"] = password }
+        }
+        return message
+    }
+
+    public static func leaveSpectator() -> [String: Any] {
+        ["type": "leave_spectator"]
+    }
+
     public static func joinRoom(roomID: Int, password: String? = nil) -> [String: Any] {
         var message: [String: Any] = [
             "type": "join_room",

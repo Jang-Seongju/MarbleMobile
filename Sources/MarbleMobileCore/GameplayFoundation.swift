@@ -162,6 +162,22 @@ public struct GameStateSnapshot: Equatable, Sendable {
     public let currentPlayerID: Int?
     public let players: [GamePlayerSnapshot]
     public let cities: [GameCityStateSnapshot]
+    public let worldTravelSelectionPlayerID: Int?
+    public let gameLifecycle: String?
+
+    public init(
+        currentPlayerID: Int?,
+        players: [GamePlayerSnapshot],
+        cities: [GameCityStateSnapshot],
+        worldTravelSelectionPlayerID: Int? = nil,
+        gameLifecycle: String? = nil
+    ) {
+        self.currentPlayerID = currentPlayerID
+        self.players = players
+        self.cities = cities
+        self.worldTravelSelectionPlayerID = worldTravelSelectionPlayerID
+        self.gameLifecycle = gameLifecycle
+    }
 }
 
 public enum GameplayParserError: Error, Equatable, LocalizedError, Sendable {
@@ -229,7 +245,35 @@ public enum GameplayParser {
         if let current, !players.contains(where: { $0.playerID == current }) {
             throw GameplayParserError.invalidMessage
         }
-        return .init(currentPlayerID: current, players: players, cities: cities)
+
+        let worldTravelSelectionPlayerID: Int?
+        if data["world_travel_selection_player_id"] == nil || data["world_travel_selection_player_id"] is NSNull {
+            worldTravelSelectionPlayerID = nil
+        } else {
+            guard let parsed = positiveInt(data["world_travel_selection_player_id"]),
+                  players.contains(where: { $0.playerID == parsed })
+            else { throw GameplayParserError.invalidMessage }
+            worldTravelSelectionPlayerID = parsed
+        }
+
+        let gameLifecycle: String?
+        if data["game_lifecycle"] == nil || data["game_lifecycle"] is NSNull {
+            gameLifecycle = nil
+        } else {
+            guard let value = data["game_lifecycle"] as? String,
+                  value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty
+            else { throw GameplayParserError.invalidMessage }
+            gameLifecycle = value
+        }
+
+        return .init(
+            currentPlayerID: current,
+            players: players,
+            cities: cities,
+            worldTravelSelectionPlayerID: worldTravelSelectionPlayerID,
+            gameLifecycle: gameLifecycle
+        )
     }
 
     public static func turnStarted(_ data: [String: Any]) throws -> TurnStartedSnapshot {

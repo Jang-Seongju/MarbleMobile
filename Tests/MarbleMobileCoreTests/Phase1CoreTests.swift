@@ -1929,4 +1929,253 @@ extension Phase1CoreTests {
         XCTAssertNil(rotor.unitBuildingType)
     }
 
+
+    func testSpectatorWireMessagesMatchServer678Contract() {
+        XCTAssertEqual(
+            WireMessages.getSpectatorTargets(roomID: 7) as NSDictionary,
+            ["type": "get_spectator_targets", "room_id": 7] as NSDictionary
+        )
+
+        let publicJoin = WireMessages.joinSpectator(roomID: 7, observedUserID: 30)
+        XCTAssertEqual(
+            publicJoin as NSDictionary,
+            ["type": "join_spectator", "room_id": 7, "observed_user_id": 30] as NSDictionary
+        )
+
+        let privateJoin = WireMessages.joinSpectator(
+            roomID: 7,
+            observedUserID: 30,
+            password: " secret "
+        )
+        XCTAssertEqual(privateJoin["password"] as? String, " secret ")
+        XCTAssertNil(WireMessages.joinSpectator(
+            roomID: 7,
+            observedUserID: 30,
+            password: "   "
+        )["password"])
+        XCTAssertEqual(WireMessages.leaveSpectator() as NSDictionary, ["type": "leave_spectator"] as NSDictionary)
+    }
+
+    func testSpectatorParsersUseObservedUserIdentityAndPreserveServerOrder() throws {
+        let list = try SpectatorParser.targetList([
+            "type": "spectator_target_list",
+            "room_id": 7,
+            "players": [
+                ["observed_user_id": 30, "nickname": "삼십"],
+                ["observed_user_id": 10, "nickname": "십"],
+                ["observed_user_id": 20, "nickname": "이십"],
+            ],
+        ])
+        XCTAssertEqual(list.roomID, 7)
+        XCTAssertEqual(list.targets.map(\.observedUserID), [30, 10, 20])
+        XCTAssertEqual(list.targets.map(\.nickname), ["삼십", "십", "이십"])
+
+        let joined = try SpectatorParser.joined([
+            "type": "spectator_joined",
+            "room_id": 7,
+            "observed_user_id": 30,
+            "observed_user_nickname": "삼십",
+        ])
+        XCTAssertEqual(joined, .init(roomID: 7, observedUserID: 30, observedUserNickname: "삼십"))
+
+        let left = try SpectatorParser.left([
+            "type": "spectator_left",
+            "room_id": 7,
+            "observed_user_id": 30,
+            "lifecycle_event": "spectator_left",
+            "actor_user_id": 99,
+            "actor_nickname": "관전자",
+            "sound_event": "leave",
+        ])
+        XCTAssertEqual(left, .init(roomID: 7, observedUserID: 30))
+    }
+
+    func testSpectatorParserRejectsDuplicateOrBooleanObservedUserID() {
+        XCTAssertThrowsError(try SpectatorParser.targetList([
+            "type": "spectator_target_list",
+            "room_id": 7,
+            "players": [
+                ["observed_user_id": 30, "nickname": "삼십"],
+                ["observed_user_id": 30, "nickname": "중복"],
+            ],
+        ]))
+        XCTAssertThrowsError(try SpectatorParser.joined([
+            "type": "spectator_joined",
+            "room_id": 7,
+            "observed_user_id": true,
+            "observed_user_nickname": "잘못",
+        ]))
+    }
+
+    func testGameStateParsesSpectatorSceneFactsWithoutPrivateInteractionState() throws {
+        let payload = try roundTripJSON([
+            "type": "game_state",
+            "current_player_id": 2,
+            "world_travel_selection_player_id": 2,
+            "game_lifecycle": "finished",
+            "players": [[
+                "player_id": 2, "user_id": 30, "nickname": "관전 대상", "team_name": "대상",
+                "marble": 2_000_000, "position": 8, "lap_count": 0,
+                "connection_status": "connected", "is_ai": false,
+            ]],
+            "cities": [],
+        ])
+        let state = try GameplayParser.gameState(payload)
+        XCTAssertEqual(state.players.first?.userID, 30)
+        XCTAssertEqual(state.worldTravelSelectionPlayerID, 2)
+        XCTAssertEqual(state.gameLifecycle, "finished")
+    }
+
+    func testSpectatorPresentationKeepsObjectiveTextButUsesObservedAudioPerspective() throws {
+        let base = presentationContextForAudioTests()
+        let context = GamePresentationContext(
+            localPlayerID: nil,
+            presentationPlayerID: 1,
+            players: base.players,
+            boardCatalog: base.boardCatalog,
+            cities: base.cities
+        )
+
+        let turn = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "turn_started",
+            payload: ["player_id": 1],
+            context: context
+        ))
+        XCTAssertEqual(turn.persistentNotice, "나 차례")
+        guard case .parallel(let turnNodes) = turn.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(turnNodes.contains(.voice(clip: "my_turn.wav", fallbackTTS: "나 차례")))
+
+        let toll = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "toll_paid",
+            payload: ["player_id": 1, "owner_id": 2, "amount": 120_000],
+            context: context
+        ))
+        XCTAssertEqual(toll.persistentNotice, "나 AI돌이에게 통행료 120,000마블 지불")
+        guard case .parallel(let tollNodes) = toll.root else { return XCTFail("parallel expected") }
+        XCTAssertTrue(tollNodes.contains(.sfx(clip: "money_out.wav", completion: .wait)))
+    }
+
+    func testSpectatorPresentationUsesObservedPerspectiveWithoutParticipantSelfWording() throws {
+        let players = [
+            GamePlayerSnapshot(
+                playerID: 1, userID: 30, nickname: "경석", teamName: "경석",
+                marble: 2_000_000, position: 8, lapCount: 0,
+                isStranded: false, isBankrupt: false, isAI: false
+            ),
+            GamePlayerSnapshot(
+                playerID: 2, userID: 40, nickname: "민수", teamName: "민수",
+                marble: 2_000_000, position: 1, lapCount: 0,
+                isStranded: false, isBankrupt: false, isAI: false
+            ),
+        ]
+        let context = GamePresentationContext(
+            localPlayerID: nil,
+            presentationPlayerID: 1,
+            players: players,
+            boardCatalog: nil,
+            cities: [
+                GameCityStateSnapshot(
+                    cityID: 1,
+                    cityName: "방콕",
+                    ownerID: 1,
+                    buildings: ["빌라"],
+                    cityEffectTypes: []
+                ),
+            ]
+        )
+
+        let forceSold = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "city_force_sold",
+            payload: [
+                "attacker_player_id": 2,
+                "owner_player_id": 1,
+                "city_id": 1,
+                "sell_value": 110_000,
+            ],
+            context: context
+        ))
+        XCTAssertEqual(forceSold.persistentNotice, "민수가 경석의 방콕을 강제 매각했습니다. 경석이 매각 대금으로 110,000마블을 받았습니다")
+        guard case .sequence(let forceNodes) = forceSold.root else { return XCTFail("sequence expected") }
+        XCTAssertEqual(forceNodes.first, .voice(clip: "oh_no.wav", fallbackTTS: nil))
+
+        let paid = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "sponsorship_paid",
+            payload: ["payer_player_id": 1, "receiver_player_id": 2],
+            context: context
+        ))
+        XCTAssertEqual(paid.persistentNotice, "경석 후원금으로 민수에게 10만 마블을 주었습니다.")
+
+        let received = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "sponsorship_received",
+            payload: ["receiver_player_id": 1, "total_amount": 100_000],
+            context: context
+        ))
+        XCTAssertEqual(received.persistentNotice, "경석이 후원금으로 모두에게서 10만 마블씩 받았습니다.")
+
+        let noSponsorship = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "sponsorship_received",
+            payload: ["receiver_player_id": 1, "total_amount": 0],
+            context: context
+        ))
+        XCTAssertEqual(noSponsorship.persistentNotice, "경석이 받을 수 있는 후원금이 없습니다.")
+
+        let worldTravel = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "world_travel_started",
+            payload: ["player_id": 1, "cost": 100_000],
+            context: context
+        ))
+        XCTAssertEqual(worldTravel.persistentNotice, "경석 세계여행 비용 100,000마블 지불")
+        guard case .sequence(let travelNodes) = worldTravel.root else { return XCTFail("sequence expected") }
+        XCTAssertEqual(travelNodes, [
+            .tts("경석 세계여행 비용 100,000마블 지불"),
+            .tts("다음 턴에 목적지로 이동하세요."),
+        ])
+
+        let stranded = try XCTUnwrap(GameNotificationPresenter.build(
+            notificationType: "player_stranded",
+            payload: ["player_id": 1],
+            context: context
+        ))
+        XCTAssertEqual(
+            stranded.persistentNotice,
+            "경석이 무인도에 갇혔습니다. 3턴 안에 더블이나 보석금(H) 또는 탈출 카드(Y)로 탈출할 수 있습니다."
+        )
+    }
+
+    func testRoomEventFormatterSupportsSpectatorLifecycleMeaning() {
+        XCTAssertEqual(
+            RoomEventFormatter.message(from: [
+                "type": "room_event",
+                "event": "spectator_entered",
+                "actor_user_id": 99,
+                "actor_nickname": "관전자",
+                "observed_user_id": 30,
+                "observed_nickname": "대상",
+            ]),
+            "관전자가 대상의 관중석으로 입장했습니다."
+        )
+        XCTAssertEqual(
+            RoomEventFormatter.message(from: [
+                "type": "spectator_left",
+                "lifecycle_event": "spectator_left",
+                "actor_user_id": 99,
+                "actor_nickname": "관전자",
+            ], eventKey: "lifecycle_event"),
+            "관전자가 퇴장했습니다."
+        )
+    }
+
+    func testLobbyRoomMenuCanEnableSpectatorEntryWithoutChangingCanonicalOrder() {
+        let actions = LobbyActionBuilder.roomActions(
+            roomCreationImplemented: true,
+            roomJoinImplemented: true,
+            spectatorInteractionImplemented: true
+        )
+        XCTAssertEqual(
+            actions.map(\.title),
+            ["방 개설", "참여하기", "관중석 입장", "방 정렬", "방 정보"]
+        )
+        XCTAssertEqual(actions.map(\.isEnabled), [true, true, true, false, true])
+    }
+
 }

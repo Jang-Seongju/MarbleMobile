@@ -74,7 +74,7 @@ struct MobileMainMenu: View {
             case .startGame:
                 return model.canRequestGameStart
             case .showLobby:
-                return model.entryPhase == .active && model.roomEntry != nil
+                return model.entryPhase == .active && model.isInGameRoom
             // 현재 게임방에서의 방 정보/내 정보 창, 방 관리 및 나머지 부가기능은
             // 후속 이식 단계에서 연결한다.
             default:

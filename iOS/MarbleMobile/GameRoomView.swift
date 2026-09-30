@@ -10,6 +10,7 @@ struct GameRoomView: View {
     @State private var focusBoardLookupAfterInspection = false
     @AccessibilityFocusState private var teamNameAccessibilityFocus: Bool
     @AccessibilityFocusState private var directTouchExitAccessibilityFocus: Bool
+    @AccessibilityFocusState private var lobbyViewAccessibilityFocus: Bool
     @AccessibilityFocusState private var returnToInteractionAccessibilityFocus: Bool
     @State private var boardAccessibilityFocusRequest = 0
 
@@ -20,7 +21,7 @@ struct GameRoomView: View {
                     .allowsHitTesting(!isInteractionBoardInspectionActive)
                     .accessibilityHidden(isInteractionBoardInspectionActive)
 
-                if !model.hasJoinedTeam {
+                if !model.hasJoinedTeam && !model.isSpectating {
                     teamSetupArea
                 }
 
@@ -40,7 +41,7 @@ struct GameRoomView: View {
                         : "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 세 번 탭하면 현재 도시 통행료를 조회하고, 두 번 탭하면 표준 VoiceOver로 전환합니다.",
                     onExitDirectTouchOverride: isInteractionBoardInspectionActive
                         ? focusReturnToInteractionAfterDirectTouch
-                        : focusPrimaryActionAfterDirectTouch,
+                        : (model.isSpectating ? focusLobbyButtonAfterDirectTouch : focusPrimaryActionAfterDirectTouch),
                     onMoveLeft: model.moveBoardLeft,
                     onMoveRight: model.moveBoardRight,
                     onMoveUp: model.moveBoardUp,
@@ -95,7 +96,7 @@ struct GameRoomView: View {
                 Text(model.alertMessage ?? "")
             }
             .confirmationDialog(
-                "게임방 나가기",
+                model.isSpectating ? "관중석 나가기" : "게임방 나가기",
                 isPresented: $showLeaveConfirmation,
                 titleVisibility: .visible
             ) {
@@ -103,10 +104,12 @@ struct GameRoomView: View {
                     .disabled(!model.canLeaveRoom)
                 Button("취소", role: .cancel) {}
             } message: {
-                Text("게임방에서 나가시겠습니까?")
+                Text(model.isSpectating ? "관중석에서 나가시겠습니까?" : "게임방에서 나가시겠습니까?")
             }
             .onAppear {
-                if !model.hasJoinedTeam {
+                if model.isSpectating {
+                    DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
+                } else if !model.hasJoinedTeam {
                     DispatchQueue.main.async { teamNameAccessibilityFocus = true }
                 }
             }
@@ -189,6 +192,10 @@ struct GameRoomView: View {
     }
 
     private var roomTitle: String {
+        if let registration = model.spectatorRegistration {
+            let title = model.roomUpdate?.title ?? "게임방"
+            return "\(registration.roomID): \(title) - \(registration.observedUserNickname)의 관중석"
+        }
         guard let room = model.roomEntry else { return "게임방" }
         return "\(room.roomID): \(room.title)"
     }
@@ -202,6 +209,7 @@ struct GameRoomView: View {
             .environmentObject(model)
 
             Button("대기실 보기") { model.showLobbyFromGameRoom() }
+                .accessibilityFocused($lobbyViewAccessibilityFocus)
 
             Button("나가기", role: .destructive) {
                 showLeaveConfirmation = true
@@ -227,6 +235,11 @@ struct GameRoomView: View {
         DispatchQueue.main.async { directTouchExitAccessibilityFocus = true }
     }
 
+    private func focusLobbyButtonAfterDirectTouch() {
+        lobbyViewAccessibilityFocus = false
+        DispatchQueue.main.async { lobbyViewAccessibilityFocus = true }
+    }
+
     private func focusReturnToInteractionAfterDirectTouch() {
         returnToInteractionAccessibilityFocus = false
         DispatchQueue.main.async { returnToInteractionAccessibilityFocus = true }
@@ -239,7 +252,7 @@ struct GameRoomView: View {
                 .buttonStyle(.borderedProminent)
                 .frame(maxWidth: .infinity)
                 .accessibilityFocused($returnToInteractionAccessibilityFocus)
-        } else {
+        } else if !model.isSpectating {
             normalGameActionControls
         }
     }

@@ -192,11 +192,16 @@ public enum RoomChatParser {
 }
 
 public enum RoomEventFormatter {
-    public static func message(from data: [String: Any]) -> String? {
-        guard data["type"] as? String == "room_event",
-              let event = data["event"] as? String,
-              !event.isEmpty
-        else { return nil }
+    public static func message(from data: [String: Any], eventKey: String = "event") -> String? {
+        guard let type = data["type"] as? String else { return nil }
+        if eventKey == "event" {
+            guard type == "room_event" else { return nil }
+        } else if eventKey == "lifecycle_event" {
+            guard type == "spectator_left" else { return nil }
+        } else {
+            return nil
+        }
+        guard let event = data[eventKey] as? String, !event.isEmpty else { return nil }
 
         let nickname = displayIdentity(
             nickname: data["actor_nickname"],
@@ -210,6 +215,16 @@ public enum RoomEventFormatter {
             return nickname.map { "\(subject($0)) 퇴장했습니다." }
         case "participant_kicked":
             return nickname.map { "\(subject($0)) 방장에 의해 퇴장 처리되었습니다." }
+        case "spectator_entered":
+            guard let nickname,
+                  let observed = displayIdentity(
+                    nickname: data["observed_nickname"],
+                    userID: data["observed_user_id"]
+                  )
+            else { return nil }
+            return "\(subject(nickname)) \(observed)의 관중석으로 입장했습니다."
+        case "spectator_left":
+            return nickname.map { "\(subject($0)) 퇴장했습니다." }
         case "host_changed":
             return nickname.map { "\(subject($0)) 방장이 되었습니다." }
         case "game_start_authority_changed":

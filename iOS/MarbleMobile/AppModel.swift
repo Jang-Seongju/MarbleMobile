@@ -59,6 +59,11 @@ final class AppModel: ObservableObject {
     @Published var roomJoinPassword = ""
     @Published var isRoomJoinPending = false
     @Published var roomJoinErrorMessage: String?
+    @Published private(set) var spectatorPhase: SpectatorClientPhase = .idle
+    @Published var pendingSpectatorTargetList: SpectatorTargetList?
+    @Published var pendingSpectatorPasswordTarget: SpectatorTarget?
+    @Published var spectatorErrorMessage: String?
+    @Published private(set) var spectatorRegistration: SpectatorRegistrationSnapshot?
     @Published var roomEntry: RoomEntrySnapshot?
     @Published var roomUpdate: RoomUpdateSnapshot?
     @Published var roomMessages: [GameRoomMessage] = []
@@ -91,6 +96,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var islandEscapeCardSelected = false
     @Published private(set) var salaryBoosterSelected = false
     private var isRoomEntryRecoveryPending = false
+    private var spectatorEntryRequest: SpectatorEntryRequest?
+    private var spectatorJoinExpectation: SpectatorJoinExpectation?
+    private var spectatorBootstrapBoardApplied = false
+    private var pendingSpectatorRoomUpdate: RoomUpdateSnapshot?
+    private var pendingSpectatorGameState: GameStateSnapshot?
+    private var spectatorContextAnnounced = false
+    private var spectatorSceneBootstrapPending = false
     private var pendingSilentHeldCardQuery = false
     private struct InteractionResultGate {
         let token: UUID
@@ -274,7 +286,7 @@ final class AppModel: ObservableObject {
         case .sort:
             announce("방 정렬은 현재 사용할 수 없습니다.")
         case .create:
-            guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
+            guard entryPhase == .active, screen == .lobby, !isInGameRoom, spectatorPhase == .idle else { return }
             guard !isRoomCreationPending, !isRoomJoinPending else { return }
             roomCreationErrorMessage = nil
             isPresentingCreateRoom = true
@@ -282,20 +294,22 @@ final class AppModel: ObservableObject {
             guard let room else { alertMessage = "입장할 방을 선택해 주세요."; return }
             beginJoinRoom(room)
         case .spectatorEntry:
-            announce("관중석 입장은 아직 연결되지 않았습니다.")
+            guard let room else { alertMessage = "관람할 방을 선택해 주세요."; return }
+            beginSpectatorEntry(room)
         }
     }
 
     func createRoom(_ request: RoomCreationRequest) {
-        guard entryPhase == .active, screen == .lobby, roomEntry == nil, !isRoomCreationPending, !isRoomJoinPending, !isRoomEntryRecoveryPending else { return }
+        guard entryPhase == .active, screen == .lobby, !isInGameRoom, spectatorPhase == .idle,
+              !isRoomCreationPending, !isRoomJoinPending, !isRoomEntryRecoveryPending else { return }
         isRoomCreationPending = true
         roomCreationErrorMessage = nil
         socket.send(WireMessages.createRoom(request))
     }
 
     func beginJoinRoom(_ room: GameRoomSummary) {
-        guard entryPhase == .active, screen == .lobby, roomEntry == nil, !isRoomEntryRecoveryPending else { return }
-        guard !isRoomCreationPending, !isRoomJoinPending else { return }
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil, spectatorRegistration == nil, !isRoomEntryRecoveryPending else { return }
+        guard !isRoomCreationPending, !isRoomJoinPending, spectatorPhase == .idle else { return }
         roomJoinErrorMessage = nil
         if room.isPrivate == true {
             roomJoinPassword = ""
@@ -322,15 +336,336 @@ final class AppModel: ObservableObject {
         roomJoinErrorMessage = nil
     }
 
+    func beginSpectatorEntry(_ room: GameRoomSummary) {
+        guard entryPhase == .active, screen == .lobby else { return }
+
+        if let registration = spectatorRegistration {
+            guard spectatorPhase == .active else { return }
+            if registration.roomID == room.id {
+                screen = .gameRoom
+            } else {
+                alertMessage = "관중석에서 먼저 퇴장해 주세요."
+            }
+            return
+        }
+
+        if roomEntry != nil {
+            alertMessage = "게임방에 참여 중에는 관중석에 입장할 수 없습니다."
+            return
+        }
+        guard spectatorPhase == .idle, !isRoomCreationPending, !isRoomJoinPending, !isRoomEntryRecoveryPending else { return }
+        guard let isPrivate = room.isPrivate else {
+            alertMessage = "선택한 방 정보를 찾을 수 없습니다."
+            return
+        }
+        let request = SpectatorEntryRequest(roomID: room.id, isPrivate: isPrivate)
+        spectatorEntryRequest = request
+        spectatorJoinExpectation = nil
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        spectatorErrorMessage = nil
+        spectatorPhase = .targetListPending
+        socket.send(WireMessages.getSpectatorTargets(roomID: room.id))
+    }
+
+    func selectSpectatorTarget(_ target: SpectatorTarget) {
+        guard spectatorPhase == .targetSelection,
+              let request = spectatorEntryRequest,
+              let list = pendingSpectatorTargetList,
+              list.roomID == request.roomID,
+              list.targets.contains(target)
+        else { return }
+
+        pendingSpectatorTargetList = nil
+        if request.isPrivate {
+            pendingSpectatorPasswordTarget = target
+            spectatorErrorMessage = nil
+            spectatorPhase = .passwordEntry
+        } else {
+            sendSpectatorJoin(request: request, target: target, password: nil)
+        }
+    }
+
+    func cancelSpectatorTargetSelection() {
+        guard spectatorPhase == .targetSelection else { return }
+        resetPendingSpectatorEntry()
+    }
+
+    func submitSpectatorPassword(_ passwordInput: String) {
+        guard spectatorPhase == .passwordEntry,
+              let request = spectatorEntryRequest, request.isPrivate,
+              let target = pendingSpectatorPasswordTarget
+        else { return }
+        guard !passwordInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            spectatorErrorMessage = "비밀번호를 입력해 주세요."
+            return
+        }
+        pendingSpectatorPasswordTarget = nil
+        // PC client(393) 계약과 같이 공백뿐인지 여부만 trim으로 검사하고,
+        // 실제 비밀번호 값은 사용자가 입력한 원문 그대로 이번 요청 한 번에만 사용한다.
+        sendSpectatorJoin(request: request, target: target, password: passwordInput)
+    }
+
+    func cancelSpectatorPassword() {
+        guard spectatorPhase == .passwordEntry else { return }
+        resetPendingSpectatorEntry()
+    }
+
+    private func sendSpectatorJoin(
+        request: SpectatorEntryRequest,
+        target: SpectatorTarget,
+        password: String?
+    ) {
+        guard spectatorRegistration == nil, spectatorPhase == .targetSelection || spectatorPhase == .passwordEntry else { return }
+        spectatorJoinExpectation = .init(request: request, target: target)
+        spectatorErrorMessage = nil
+        spectatorPhase = .joinPending
+        socket.send(WireMessages.joinSpectator(
+            roomID: request.roomID,
+            observedUserID: target.observedUserID,
+            password: password
+        ))
+    }
+
+    private func resetPendingSpectatorEntry() {
+        spectatorPhase = .idle
+        spectatorEntryRequest = nil
+        spectatorJoinExpectation = nil
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        spectatorErrorMessage = nil
+    }
+
+    private func handleSpectatorTargetList(_ data: [String: Any]) {
+        guard spectatorPhase == .targetListPending,
+              let request = spectatorEntryRequest
+        else { return }
+
+        do {
+            let list = try SpectatorParser.targetList(data)
+            // stale response는 현재 선택으로 room_id를 다시 추측하지 않는다.
+            guard list.roomID == request.roomID else { return }
+            if list.targets.isEmpty {
+                resetPendingSpectatorEntry()
+                alertMessage = "관람할 수 있는 플레이어가 없습니다."
+                return
+            }
+            pendingSpectatorTargetList = list
+            spectatorErrorMessage = nil
+            spectatorPhase = .targetSelection
+        } catch {
+            resetPendingSpectatorEntry()
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    private func handleSpectatorJoined(_ data: [String: Any]) {
+        guard spectatorPhase == .joinPending,
+              let expectation = spectatorJoinExpectation
+        else { return }
+
+        do {
+            let registration = try SpectatorParser.joined(data)
+            guard registration.roomID == expectation.request.roomID,
+                  registration.observedUserID == expectation.target.observedUserID,
+                  registration.observedUserNickname == expectation.target.nickname
+            else {
+                abandonUntrustedSpectatorJoin(message: "관중석에 입장할 수 없습니다.")
+                return
+            }
+
+            prepareSpectatorRoom(registration)
+        } catch {
+            // spectator_joined는 서버 등록 확정 뒤에 오지만 malformed payload는
+            // 그 등록의 room/user parity 자체를 신뢰할 수 없다. 임의의
+            // leave_spectator를 보내지 않고 현재 연결을 닫아 서버 연결 종료
+            // lifecycle이 등록을 제거하게 한다(client(393) 계약).
+            abandonUntrustedSpectatorJoin(message: "관중석에 입장할 수 없습니다.")
+        }
+    }
+
+    private func abandonUntrustedSpectatorJoin(message: String) {
+        guard spectatorPhase == .joinPending else { return }
+        spectatorPhase = .aborting
+        spectatorEntryRequest = nil
+        spectatorJoinExpectation = nil
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        spectatorErrorMessage = nil
+        pendingSpectatorRoomUpdate = nil
+        pendingSpectatorGameState = nil
+        if !message.isEmpty { alertMessage = message }
+        clearRoomPresentationState()
+        screen = .lobby
+        // notify=true가 AppModel의 공통 연결 종료 생명주기를 실행해 인증 세션은
+        // 유지한 채 normal_lobby로 다시 진입시킨다. 관중석 자체는 복구하지 않는다.
+        socket.disconnect(notify: true)
+    }
+
+    private func prepareSpectatorRoom(_ registration: SpectatorRegistrationSnapshot) {
+        output.stopAll()
+        spectatorRegistration = registration
+        spectatorPhase = .bootstrapping
+        spectatorEntryRequest = nil
+        spectatorJoinExpectation = nil
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        spectatorErrorMessage = nil
+        spectatorBootstrapBoardApplied = false
+        pendingSpectatorRoomUpdate = nil
+        pendingSpectatorGameState = nil
+        spectatorContextAnnounced = false
+        spectatorSceneBootstrapPending = true
+
+        // 참가 membership은 만들지 않는다. 기존 GameRoomView에 공개 게임 상태만
+        // 적용하기 위해 화면/게임 presentation 상태만 새로 준비한다.
+        roomEntry = nil
+        roomUpdate = nil
+        roomMessages = []
+        boardCatalog = nil
+        staticInformationCatalog = nil
+        boardCursor.reset()
+        gameRotor.reset()
+        clearGameplayState()
+        teamNameDraft = ""
+        chatDraft = ""
+        isTeamCreationPending = false
+        isLeaveRoomPending = false
+    }
+
+    private func activateSpectatorRoomIfReady() {
+        guard spectatorPhase == .bootstrapping,
+              spectatorRegistration != nil,
+              spectatorBootstrapBoardApplied,
+              roomUpdate != nil
+        else { return }
+
+        spectatorPhase = .active
+        screen = .gameRoom
+        if !spectatorContextAnnounced, let registration = spectatorRegistration {
+            spectatorContextAnnounced = true
+            let message = "\(registration.observedUserNickname)의 관중석"
+            // 입장 SFX는 server(678)의 room_sound(spectator_enter)가 관전자 본인까지
+            // 포함해 공개 수신자에게 정확히 한 번 전달한다. 여기서는 PC 계약대로
+            // 관전 대상 안내 TTS만 로컬로 출력해 SFX를 중복 재생하지 않는다.
+            output.emit(.systemTTS(message, preservePending: true))
+        }
+
+        if let pending = pendingSpectatorGameState,
+           let registration = spectatorRegistration {
+            pendingSpectatorGameState = nil
+            applySpectatorGameState(pending, registration: registration)
+        }
+    }
+
+    private func handleSpectatorLeft(_ data: [String: Any]) {
+        guard let left = try? SpectatorParser.left(data) else { return }
+
+        guard let registration = spectatorRegistration,
+              left.roomID == registration.roomID,
+              left.observedUserID == registration.observedUserID
+        else { return }
+
+        let lifecycleMessage = RoomEventFormatter.message(from: data, eventKey: "lifecycle_event")
+        let lifecycleClip = roomSoundClip(for: data["sound_event"] as? String)
+        finishSpectatorSession()
+        if let lifecycleMessage {
+            let root: PresentationNode
+            if let lifecycleClip {
+                root = .parallel([
+                    .sfx(clip: lifecycleClip, completion: .startOnly),
+                    .tts(lifecycleMessage)
+                ])
+            } else {
+                root = .tts(lifecycleMessage)
+            }
+            output.emit(PresentationPlan(
+                root: root,
+                category: .systemUI,
+                queuePolicy: .enqueue,
+                interruptRetention: .preservePending
+            ))
+        } else if let lifecycleClip {
+            output.emit(PresentationPlan(
+                root: .sfx(clip: lifecycleClip, completion: .startOnly),
+                category: .systemUI
+            ))
+        }
+    }
+
+    private func abortSpectatorBootstrap(message: String) {
+        let serverMayHaveRegistration = spectatorRegistration != nil
+            || spectatorPhase == .bootstrapping
+            || spectatorPhase == .active
+            || spectatorPhase == .leavePending
+            || spectatorPhase == .aborting
+        guard serverMayHaveRegistration else {
+            resetPendingSpectatorEntry()
+            if !message.isEmpty { alertMessage = message }
+            return
+        }
+        if spectatorPhase == .aborting { return }
+        spectatorPhase = .aborting
+        spectatorErrorMessage = nil
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        if !message.isEmpty { alertMessage = message }
+        // 신뢰 가능한 registration은 spectator_left parity 확인을 위해 보존하되,
+        // 불완전/오류 관람 화면과 게임 런타임은 즉시 폐기한다. 늦은 snapshot이
+        // 다시 ACTIVE 화면을 만들 수 없도록 phase는 ABORTING을 유지한다.
+        clearRoomPresentationState()
+        screen = .lobby
+        socket.send(WireMessages.leaveSpectator())
+    }
+
+    private func finishSpectatorSession() {
+        clearSpectatorState()
+        clearRoomPresentationState()
+        screen = .lobby
+    }
+
+    private func clearSpectatorState() {
+        spectatorPhase = .idle
+        spectatorEntryRequest = nil
+        spectatorJoinExpectation = nil
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        spectatorErrorMessage = nil
+        spectatorRegistration = nil
+        spectatorBootstrapBoardApplied = false
+        pendingSpectatorRoomUpdate = nil
+        pendingSpectatorGameState = nil
+        spectatorContextAnnounced = false
+        spectatorSceneBootstrapPending = false
+    }
+
     private func sendJoinRoom(room: GameRoomSummary, password: String?) {
-        guard entryPhase == .active, screen == .lobby, roomEntry == nil else { return }
-        guard !isRoomCreationPending, !isRoomJoinPending else { return }
+        guard entryPhase == .active, screen == .lobby, roomEntry == nil, spectatorRegistration == nil else { return }
+        guard !isRoomCreationPending, !isRoomJoinPending, spectatorPhase == .idle else { return }
         isRoomJoinPending = true
         roomJoinErrorMessage = nil
         socket.send(WireMessages.joinRoom(roomID: room.id, password: password))
     }
 
-    var isInGameRoom: Bool { roomEntry != nil }
+    var isSpectating: Bool { spectatorRegistration != nil }
+
+    var isInGameRoom: Bool { roomEntry != nil || spectatorRegistration != nil }
+
+    var canShowGameRoom: Bool {
+        roomEntry != nil || (spectatorRegistration != nil && spectatorPhase == .active)
+    }
+
+    var currentRoomID: Int? { roomEntry?.roomID ?? spectatorRegistration?.roomID }
+
+    /// 참가자는 자기 player_id, 관전자는 observed_user_id를 현재 game_state에서
+    /// 해석한 player_id를 읽기/오디오 관점으로 사용한다. 조작 권한은 myPlayerID에만 있다.
+    var gamePerspectivePlayerID: Int? {
+        if let myPlayerID { return myPlayerID }
+        guard let registration = spectatorRegistration else { return nil }
+        return gamePlayers.first(where: { $0.userID == registration.observedUserID })?.playerID
+    }
+
+    private var informationSelfPlayerID: Int? { isSpectating ? nil : myPlayerID }
 
     var hasJoinedTeam: Bool {
         guard let userID = session?.identity.userID else { return false }
@@ -343,7 +678,7 @@ final class AppModel: ObservableObject {
     }
 
     var isBoardReady: Bool {
-        hasJoinedTeam && boardCatalog != nil
+        boardCatalog != nil && (hasJoinedTeam || spectatorRegistration != nil)
     }
 
     var isWorldTravelDestinationSelectionActive: Bool {
@@ -394,7 +729,11 @@ final class AppModel: ObservableObject {
     }
 
     var canLeaveRoom: Bool {
-        guard entryPhase == .active, roomEntry != nil, !isLeaveRoomPending, !isTeamCreationPending else { return false }
+        guard entryPhase == .active else { return false }
+        if spectatorRegistration != nil {
+            return spectatorPhase == .active && !isLeaveRoomPending
+        }
+        guard roomEntry != nil, !isLeaveRoomPending, !isTeamCreationPending else { return false }
         guard gameIsActive else { return true }
         return localGamePlayer?.isBankrupt == true
     }
@@ -448,7 +787,7 @@ final class AppModel: ObservableObject {
         let text = InformationCityPresenter.format(
             info,
             spec: InformationDisplaySpecs.cityInfo,
-            myPlayerID: myPlayerID
+            myPlayerID: informationSelfPlayerID
         )
         return text.isEmpty ? cell.shortDescription : text
     }
@@ -505,6 +844,9 @@ final class AppModel: ObservableObject {
     }
 
     func performBoardMagicTap() {
+        // 관전자는 참가자 입력을 만들지 않는다. PC client(393)의 read-only
+        // BLOCK 경계와 같이 별도 임의 안내 문구도 만들지 않고 조용히 차단한다.
+        if isSpectating { return }
         if isWorldTravelDestinationSelectionActive {
             confirmWorldTravelDestination()
             return
@@ -609,7 +951,7 @@ final class AppModel: ObservableObject {
         case .playerInformation:
             guard let target = gameRotor.movePlayerTarget(
                 forward: forward,
-                myPlayerID: myPlayerID,
+                myPlayerID: gamePerspectivePlayerID,
                 players: gamePlayers
             ) else {
                 announce("플레이어 정보 없음")
@@ -681,7 +1023,7 @@ final class AppModel: ObservableObject {
             announce("게임이 시작되지 않았습니다.")
             return
         }
-        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+        gameRotor.synchronizePlayers(myPlayerID: gamePerspectivePlayerID, players: gamePlayers)
         guard let target = gameRotor.playerTarget else {
             announce("플레이어 정보 없음")
             return
@@ -690,7 +1032,7 @@ final class AppModel: ObservableObject {
         case .unowned:
             announce("플레이어 정보 없음")
         case .player(let playerID):
-            if playerID == myPlayerID {
+            if playerID == gamePerspectivePlayerID {
                 socket.send(WireMessages.informationQuery(queryType: "player_info"))
             } else {
                 socket.send(WireMessages.informationQuery(
@@ -716,10 +1058,10 @@ final class AppModel: ObservableObject {
             announce("게임이 시작되지 않았습니다.")
             return
         }
-        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+        gameRotor.synchronizePlayers(myPlayerID: gamePerspectivePlayerID, players: gamePlayers)
         guard let playerID = gameRotor.movePlayerPositionTarget(
             forward: forward,
-            myPlayerID: myPlayerID,
+            myPlayerID: gamePerspectivePlayerID,
             players: gamePlayers
         ) else {
             announce("플레이어 위치 정보 없음")
@@ -734,7 +1076,7 @@ final class AppModel: ObservableObject {
             announce("게임이 시작되지 않았습니다.")
             return
         }
-        gameRotor.synchronizePlayers(myPlayerID: myPlayerID, players: gamePlayers)
+        gameRotor.synchronizePlayers(myPlayerID: gamePerspectivePlayerID, players: gamePlayers)
         guard let target = gameRotor.playerTarget else {
             announce("플레이어 정보 없음")
             return
@@ -747,7 +1089,7 @@ final class AppModel: ObservableObject {
                 payload: ["filter": "unowned", "index": index]
             ))
         case .player(let playerID):
-            if playerID == myPlayerID {
+            if playerID == gamePerspectivePlayerID {
                 let index = gameRotor.nextOwnedCityIndex(forward: forward)
                 socket.send(WireMessages.informationQuery(
                     queryType: "city_info",
@@ -795,7 +1137,7 @@ final class AppModel: ObservableObject {
             let text = InformationResultPresenter.format(
                 queryType: "city_description",
                 result: InformationResult(info: catalog.cityDescription(cityID: cityID)),
-                myPlayerID: myPlayerID
+                myPlayerID: informationSelfPlayerID
             ) ?? "도시 설명을 찾을 수 없습니다."
             announce(text)
             return
@@ -848,7 +1190,7 @@ final class AppModel: ObservableObject {
         let text = InformationResultPresenter.format(
             queryType: "building_value_info",
             result: InformationResult(info: info),
-            myPlayerID: myPlayerID,
+            myPlayerID: informationSelfPlayerID,
             valueField: valueKind.valueField
         ) ?? "건물 정보를 찾을 수 없습니다."
         announce(text)
@@ -961,7 +1303,7 @@ final class AppModel: ObservableObject {
     }
 
     func respondToInteraction(responseType: String, payload: [String: Any] = [:]) {
-        guard entryPhase == .active,
+        guard !isSpectating, entryPhase == .active,
               let request = activeInteraction, !interactionResponseSubmitted else { return }
         interactionResponseSubmitted = true
 
@@ -1026,6 +1368,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleAISelectionRequired(_ data: [String: Any]) {
+        guard !isSpectating else { return }
         do {
             let request = try AIPlayerSelectionParser.parse(data)
             guard request.roomID == roomEntry?.roomID, canCurrentUserStartGame else { return }
@@ -1040,6 +1383,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleAISelectionCancelled(_ data: [String: Any]) {
+        guard !isSpectating else { return }
         guard data["type"] as? String == "game_start_ai_selection_cancelled",
               let roomID = WireScalarParser.exactInt(data["room_id"]), roomID == roomEntry?.roomID,
               let requestID = data["request_id"] as? String,
@@ -1086,7 +1430,9 @@ final class AppModel: ObservableObject {
             guard let playerID = WireScalarParser.exactInt(data["player_id"]), playerID > 0,
                   let nickname = data["nickname"] as? String,
                   !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            if let userID = WireScalarParser.exactInt(data["user_id"]), userID == session?.identity.userID {
+            if !isSpectating,
+               let userID = WireScalarParser.exactInt(data["user_id"]),
+               userID == session?.identity.userID {
                 message = "당신이 선입니다."
             } else {
                 message = "\(KoreanPresentationText.subject(nickname.trimmingCharacters(in: .whitespacesAndNewlines))) 선입니다."
@@ -1107,8 +1453,10 @@ final class AppModel: ObservableObject {
                 interruptRetention: .preservePending
             ))
         case "first_player":
-            let isLocalFirst = WireScalarParser.exactInt(data["user_id"]) == session?.identity.userID
-            if isLocalFirst {
+            let firstUserID = WireScalarParser.exactInt(data["user_id"])
+            let useFirstPlayerVoice = (!isSpectating && firstUserID == session?.identity.userID)
+                || (isSpectating && firstUserID == spectatorRegistration?.observedUserID)
+            if useFirstPlayerVoice {
                 output.emit(PresentationPlan(
                     root: .voice(clip: "first_player.wav", fallbackTTS: message),
                     category: .systemUI,
@@ -1124,6 +1472,21 @@ final class AppModel: ObservableObject {
     }
 
     private func handleGameStarted(_ data: [String: Any]) {
+        if isSpectating {
+            // game_started는 관전 대상 presentation stream에도 전달된다. 관전자는
+            // payload의 your_player_id를 조작 권한(myPlayerID)으로 저장하지 않는다.
+            gameRotor.reset()
+            resetPrivateTurnPreparationState()
+            clearInteractionPresentationGates()
+            activeInteraction = nil
+            interactionResponseSubmitted = false
+            let message = "게임을 시작합니다."
+            output.emit(.gameEvent(message, root: .sequence([
+                .voice(clip: "game_start.wav", fallbackTTS: message)
+            ])))
+            return
+        }
+
         do {
             let snapshot = try GameplayParser.gameStarted(data)
             resetAIRemainderOutputMode()
@@ -1149,7 +1512,7 @@ final class AppModel: ObservableObject {
             activatedInteractionRequestIDs = []
             boardCatalog = snapshot.boardCatalog
             boardCursor.reset()
-                resetPrivateTurnPreparationState()
+            resetPrivateTurnPreparationState()
             refreshHeldCardStateSilently()
             let message = "게임을 시작합니다."
             output.emit(.gameEvent(message, root: .sequence([
@@ -1161,6 +1524,34 @@ final class AppModel: ObservableObject {
     }
 
     private func handleGameState(_ data: [String: Any]) {
+        if isSpectating {
+            guard spectatorPhase == .bootstrapping || spectatorPhase == .active,
+                  let registration = spectatorRegistration
+            else { return }
+            do {
+                let snapshot = try GameplayParser.gameState(data)
+                let matches = snapshot.players.filter { $0.userID == registration.observedUserID }
+                guard matches.count == 1 else {
+                    abortSpectatorBootstrap(message: "관전 대상의 게임 정보를 확인할 수 없습니다.")
+                    return
+                }
+
+                // spectator_joined 뒤 board_cells/room_update보다 game_state가 먼저
+                // 도착할 수 있다. PC client(393)처럼 최신 snapshot 하나만 보관해
+                // GameRoomView/bootstrap이 준비된 뒤 공통 적용 경로를 탄다.
+                if spectatorPhase == .bootstrapping,
+                   (!spectatorBootstrapBoardApplied || roomUpdate == nil) {
+                    pendingSpectatorGameState = snapshot
+                    return
+                }
+
+                applySpectatorGameState(snapshot, registration: registration)
+            } catch {
+                abortSpectatorBootstrap(message: "게임 상태를 적용할 수 없습니다.")
+            }
+            return
+        }
+
         guard gameIsActive || gameFinished else { return }
         do {
             let snapshot = try GameplayParser.gameState(data)
@@ -1173,6 +1564,83 @@ final class AppModel: ObservableObject {
         } catch {
             return
         }
+    }
+
+    private func applySpectatorGameState(
+        _ snapshot: GameStateSnapshot,
+        registration: SpectatorRegistrationSnapshot
+    ) {
+        let matches = snapshot.players.filter { $0.userID == registration.observedUserID }
+        guard matches.count == 1 else {
+            abortSpectatorBootstrap(message: "관전 대상의 게임 정보를 확인할 수 없습니다.")
+            return
+        }
+
+        let wasFinished = gameFinished
+        gamePlayers = snapshot.players
+        gameCities = snapshot.cities
+        myPlayerID = nil
+        currentPlayerID = snapshot.currentPlayerID
+
+        if snapshot.gameLifecycle == "finished" {
+            gameIsActive = false
+            gameFinished = true
+            turnDeadlineWarning.stop(preserveZeroSFX: false)
+            currentTurnGeneration = nil
+            turnCommandWindowOpen = false
+            turnActionStarted = false
+        } else {
+            gameIsActive = true
+            gameFinished = false
+        }
+
+        let perspectiveID = matches[0].playerID
+        if wasFinished && snapshot.gameLifecycle != "finished" {
+            gameRotor.reset()
+            resetAIRemainderOutputMode()
+        }
+        gameRotor.synchronizePlayers(myPlayerID: perspectiveID, players: snapshot.players)
+        refreshAIRemainderOutputMode()
+        synchronizeSpectatorSceneAudio(snapshot: snapshot, perspectivePlayerID: perspectiveID)
+    }
+
+    private func synchronizeSpectatorSceneAudio(
+        snapshot: GameStateSnapshot,
+        perspectivePlayerID: Int
+    ) {
+        guard snapshot.gameLifecycle != "finished" else {
+            spectatorSceneBootstrapPending = false
+            output.stopBGM()
+            return
+        }
+
+        let replayPrompt = spectatorSceneBootstrapPending
+        spectatorSceneBootstrapPending = false
+
+        if snapshot.worldTravelSelectionPlayerID == perspectivePlayerID {
+            audio.playBGM("airplane.mp3", loop: true)
+            if replayPrompt {
+                let prompt = "목적지를 선택하고 두 손가락으로 두 번 탭하세요."
+                output.emit(PresentationPlan(
+                    root: .sequence([
+                        .voice(clip: "select_area.wav", fallbackTTS: nil),
+                        .tts(prompt)
+                    ]),
+                    category: .gameplay,
+                    queuePolicy: .enqueue,
+                    interruptRetention: .preservePending
+                ))
+            }
+            return
+        }
+        guard let player = snapshot.players.first(where: { $0.playerID == perspectivePlayerID }),
+              let cell = boardCatalog?.cell(at: player.position),
+              cell.cellType == "WORLD_TRAVEL"
+        else {
+            output.stopBGM()
+            return
+        }
+        audio.playBGM("airport_world.mp3", loop: true)
     }
 
     private func handleNotification(_ data: [String: Any]) {
@@ -1211,12 +1679,24 @@ final class AppModel: ObservableObject {
         } else if type == "turn_activated" {
             let playerID = WireScalarParser.exactInt(payload["player_id"])
             let generation = WireScalarParser.exactInt(payload["turn_generation"])
-            if playerID == myPlayerID, generation == currentTurnGeneration {
+            let perspectivePlayerID = gamePerspectivePlayerID
+            if isSpectating, currentTurnGeneration == nil, playerID == perspectivePlayerID,
+               let generation {
+                // ACTIVE 턴 도중 관중석에 들어오면 bootstrap turn_activated가
+                // 과거 TURN_STARTED를 대신해 presentation lifecycle을 연다.
+                currentTurnGeneration = generation
+                if let next = payload["next_turn_command"] as? String, !next.isEmpty {
+                    nextTurnCommand = next
+                }
+            }
+            if playerID == perspectivePlayerID,
+               generation == currentTurnGeneration,
+               currentPlayerID == perspectivePlayerID {
                 let remaining = WireScalarParser.nonBooleanNumber(payload["turn_remaining_seconds"])?.doubleValue
                 let deadline = payload["turn_deadline_at"] as? String
                 _ = turnDeadlineWarning.startForTurn(
                     playerID: playerID,
-                    localPlayerID: myPlayerID,
+                    localPlayerID: perspectivePlayerID,
                     turnGeneration: generation,
                     turnDeadlineAt: deadline,
                     turnRemainingSeconds: remaining
@@ -1244,13 +1724,14 @@ final class AppModel: ObservableObject {
         } else if type == "arrived",
                   let playerID = WireScalarParser.exactInt(payload["player_id"]),
                   let index = WireScalarParser.exactInt(payload["to_index"]), (1...32).contains(index),
-                  playerID == myPlayerID {
+                  playerID == gamePerspectivePlayerID {
             boardCursor.jump(to: index)
             gameRotor.resetBoardCellSelections()
         }
 
         let context = GamePresentationContext(
             localPlayerID: myPlayerID,
+            presentationPlayerID: gamePerspectivePlayerID,
             players: gamePlayers,
             boardCatalog: boardCatalog,
             cities: gameCities
@@ -1293,6 +1774,7 @@ final class AppModel: ObservableObject {
     }
 
     private func updatePrivateTurnPreparationState(notificationType: String, payload: [String: Any]) {
+        guard !isSpectating else { return }
         let playerID = WireScalarParser.exactInt(payload["player_id"])
         if let playerID, let myPlayerID, playerID != myPlayerID { return }
 
@@ -1381,7 +1863,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleInteractionRequest(_ data: [String: Any]) {
-        guard gameIsActive else { return }
+        guard !isSpectating, gameIsActive else { return }
         do {
             let request = try InteractionRequestParser.parse(data)
             if activeInteraction?.requestID == request.requestID
@@ -1428,6 +1910,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleInteractionFlowCompleted(_ data: [String: Any]) {
+        guard !isSpectating else { return }
         guard let flowID = data["interaction_flow_id"] as? String,
               !flowID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
@@ -1573,7 +2056,7 @@ final class AppModel: ObservableObject {
             return InformationResultPresenter.format(
                 queryType: queryType,
                 result: result,
-                myPlayerID: myPlayerID,
+                myPlayerID: informationSelfPlayerID,
                 index: index
             )
         }
@@ -1592,7 +2075,7 @@ final class AppModel: ObservableObject {
         return InformationResultPresenter.format(
             queryType: queryType,
             result: result,
-            myPlayerID: myPlayerID,
+            myPlayerID: informationSelfPlayerID,
             valueField: payload["value_field"] as? String,
             filterType: payload["filter"] as? String,
             asBuildingStatus: asBuildingStatus
@@ -1607,7 +2090,7 @@ final class AppModel: ObservableObject {
             return InformationResultPresenter.format(
                 queryType: "player_positions",
                 result: result,
-                myPlayerID: myPlayerID
+                myPlayerID: informationSelfPlayerID
             )
         }
         guard let index = result.items.firstIndex(where: { $0.playerID == playerID }) else {
@@ -1623,7 +2106,7 @@ final class AppModel: ObservableObject {
         return InformationResultPresenter.format(
             queryType: "player_positions",
             result: result,
-            myPlayerID: myPlayerID,
+            myPlayerID: informationSelfPlayerID,
             index: index
         )
     }
@@ -1638,7 +2121,7 @@ final class AppModel: ObservableObject {
         case "festival_city_list":
             guard !result.items.isEmpty else {
                 return InformationResultPresenter.format(
-                    queryType: queryType, result: result, myPlayerID: myPlayerID
+                    queryType: queryType, result: result, myPlayerID: informationSelfPlayerID
                 )
             }
             let index = gameRotor.nextCityStatusIndex(kind: .festival, forward: forward, count: result.items.count)
@@ -1646,7 +2129,7 @@ final class AppModel: ObservableObject {
         case "active_city_effects":
             guard !result.items.isEmpty else {
                 return InformationResultPresenter.format(
-                    queryType: queryType, result: result, myPlayerID: myPlayerID
+                    queryType: queryType, result: result, myPlayerID: informationSelfPlayerID
                 )
             }
             let index = gameRotor.nextCityStatusIndex(kind: .activeEffect, forward: forward, count: result.items.count)
@@ -1655,7 +2138,7 @@ final class AppModel: ObservableObject {
             selectedInfo = result.info
             if selectedInfo == nil {
                 return InformationResultPresenter.format(
-                    queryType: queryType, result: result, myPlayerID: myPlayerID
+                    queryType: queryType, result: result, myPlayerID: informationSelfPlayerID
                 )
             }
         default:
@@ -1666,19 +2149,19 @@ final class AppModel: ObservableObject {
         jumpBoardToInformationCity(selectedInfo)
         guard let cityID = selectedInfo.cityID else {
             return InformationResultPresenter.format(
-                queryType: queryType, result: result, myPlayerID: myPlayerID
+                queryType: queryType, result: result, myPlayerID: informationSelfPlayerID
             )
         }
         if let fullInfo = gameCities.first(where: { $0.cityID == cityID }) {
             let text = InformationCityPresenter.format(
                 fullInfo,
                 spec: InformationDisplaySpecs.cityInfo,
-                myPlayerID: myPlayerID
+                myPlayerID: informationSelfPlayerID
             )
             if !text.isEmpty { return text }
         }
         return InformationResultPresenter.format(
-            queryType: queryType, result: result, myPlayerID: myPlayerID
+            queryType: queryType, result: result, myPlayerID: informationSelfPlayerID
         )
     }
 
@@ -1698,7 +2181,10 @@ final class AppModel: ObservableObject {
     }
 
     func sendRoomChatFromDraft() {
-        guard roomEntry != nil else { return }
+        guard isInGameRoom else { return }
+        if isSpectating {
+            guard spectatorPhase == .active else { return }
+        }
         let message = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else { return }
         socket.send(WireMessages.roomChat(message: message))
@@ -1706,19 +2192,24 @@ final class AppModel: ObservableObject {
     }
 
     func showLobbyFromGameRoom() {
-        guard roomEntry != nil else { return }
+        guard isInGameRoom else { return }
         screen = .lobby
     }
 
     func showGameRoom() {
-        guard roomEntry != nil else { return }
+        guard canShowGameRoom else { return }
         screen = .gameRoom
     }
 
     func requestLeaveRoom() {
         guard canLeaveRoom else { return }
         isLeaveRoomPending = true
-        socket.send(WireMessages.leaveRoom())
+        if spectatorRegistration != nil {
+            spectatorPhase = .leavePending
+            socket.send(WireMessages.leaveSpectator())
+        } else {
+            socket.send(WireMessages.leaveRoom())
+        }
     }
 
     func openMyProfile() {
@@ -1790,6 +2281,12 @@ final class AppModel: ObservableObject {
         }
 
         switch type {
+        case "spectator_target_list":
+            handleSpectatorTargetList(data)
+        case "spectator_joined":
+            handleSpectatorJoined(data)
+        case "spectator_left":
+            handleSpectatorLeft(data)
         case "game_start_ai_selection_required":
             handleAISelectionRequired(data)
         case "game_start_ai_selection_cancelled":
@@ -1872,7 +2369,29 @@ final class AppModel: ObservableObject {
             if let message = data["message"] as? String { alertMessage = message }
         case "error":
             if let message = data["message"] as? String {
-                if isRoomCreationPending {
+                let requestType = data["request_type"] as? String
+                if requestType == "get_spectator_targets" && spectatorPhase == .targetListPending {
+                    resetPendingSpectatorEntry()
+                    alertMessage = message
+                } else if requestType == "join_spectator" && spectatorPhase == .joinPending {
+                    resetPendingSpectatorEntry()
+                    clearRoomPresentationState()
+                    alertMessage = message
+                    screen = .lobby
+                } else if requestType == "join_spectator" && spectatorPhase == .aborting {
+                    // 신뢰할 수 없는 spectator_joined 때문에 이미 연결 폐기를
+                    // 확정한 상태다. 늦게 온 join 오류로 IDLE에 복귀하지 않는다.
+                    alertMessage = message
+                } else if requestType == "leave_spectator" && spectatorPhase == .leavePending {
+                    spectatorPhase = .active
+                    isLeaveRoomPending = false
+                    alertMessage = message
+                } else if requestType == "leave_spectator" && spectatorPhase == .aborting {
+                    // 보상 퇴장까지 실패하면 서버에 stale spectator 등록을 남기지
+                    // 않도록 연결 종료 생명주기에 맡긴다. 관중석은 복구하지 않는다.
+                    alertMessage = message
+                    socket.disconnect(notify: true)
+                } else if isRoomCreationPending {
                     isRoomCreationPending = false
                     roomCreationErrorMessage = message
                 } else if isRoomJoinPending {
@@ -1914,7 +2433,7 @@ final class AppModel: ObservableObject {
                 recoveryCompletedSent = false
                 recoveryEntry = nil
                 entryPhase = .active
-                if roomEntry != nil {
+                if roomEntry != nil || spectatorRegistration != nil || spectatorPhase != .idle {
                     clearRoomState()
                     screen = .lobby
                 }
@@ -2183,6 +2702,35 @@ final class AppModel: ObservableObject {
     }
 
     private func handleBoardCells(_ data: [String: Any]) {
+        if let registration = spectatorRegistration {
+            guard spectatorPhase == .bootstrapping || spectatorPhase == .active else { return }
+            do {
+                let snapshot = try BoardBootstrapParser.parse(data)
+                // 기존 게임 종료 뒤 새 게임 bootstrap의 첫 정적 보드라면
+                // 이전 게임의 동적 상태를 먼저 비운다. 같은 live game의 중복
+                // board_cells는 멱등 적용한다.
+                if gameFinished {
+                    clearGameplayState()
+                    spectatorSceneBootstrapPending = true
+                }
+                boardCatalog = snapshot.boardCatalog
+                staticInformationCatalog = snapshot.staticInformation
+                if snapshot.boardCatalog.cell(at: boardCursor.index) == nil {
+                    boardCursor.reset()
+                }
+                gameRotor.resetBoardCellSelections()
+                spectatorBootstrapBoardApplied = true
+                if let pending = pendingSpectatorRoomUpdate, pending.roomID == registration.roomID {
+                    pendingSpectatorRoomUpdate = nil
+                    applySpectatorRoomUpdate(pending)
+                }
+                activateSpectatorRoomIfReady()
+            } catch {
+                abortSpectatorBootstrap(message: "관중석 보드 정보를 적용할 수 없습니다.")
+            }
+            return
+        }
+
         guard roomEntry != nil else { return }
         do {
             let snapshot = try BoardBootstrapParser.parse(data)
@@ -2200,6 +2748,23 @@ final class AppModel: ObservableObject {
     }
 
     private func handleRoomUpdate(_ data: [String: Any]) {
+        if let registration = spectatorRegistration {
+            guard spectatorPhase == .bootstrapping || spectatorPhase == .active else { return }
+            do {
+                let snapshot = try RoomUpdateParser.parse(data)
+                guard snapshot.roomID == registration.roomID else { return }
+                if !spectatorBootstrapBoardApplied {
+                    pendingSpectatorRoomUpdate = snapshot
+                    return
+                }
+                applySpectatorRoomUpdate(snapshot)
+                activateSpectatorRoomIfReady()
+            } catch {
+                abortSpectatorBootstrap(message: "관중석 방 정보를 적용할 수 없습니다.")
+            }
+            return
+        }
+
         guard let currentRoomID = roomEntry?.roomID else { return }
         do {
             let snapshot = try RoomUpdateParser.parse(data)
@@ -2216,6 +2781,12 @@ final class AppModel: ObservableObject {
             // PC판과 같은 원칙: 잘못된 room_update로 기존 authoritative 상태를 덮어쓰지 않는다.
             return
         }
+    }
+
+    private func applySpectatorRoomUpdate(_ snapshot: RoomUpdateSnapshot) {
+        roomUpdate = snapshot
+        isTeamCreationPending = false
+        teamNameDraft = ""
     }
 
     private func handleRoomLeft(_ data: [String: Any]) {
@@ -2262,7 +2833,7 @@ final class AppModel: ObservableObject {
         resetAIRemainderOutputMode()
     }
 
-    private func clearRoomState() {
+    private func clearRoomPresentationState() {
         output.stopAll()
         roomEntry = nil
         roomUpdate = nil
@@ -2278,8 +2849,22 @@ final class AppModel: ObservableObject {
         isLeaveRoomPending = false
     }
 
+    private func clearRoomState() {
+        clearSpectatorState()
+        clearRoomPresentationState()
+    }
+
     private func handleDisconnect(_ message: String) {
         guard screen != .login, session != nil else { return }
+
+        // 관중석은 서버 계약상 복구 대상이 아니다. 연결이 끊기면 서버 등록도
+        // 제거되므로 참가자 recovery 상태를 보존하지 않고 로컬 관람만 정리한다.
+        if spectatorRegistration != nil || spectatorPhase != .idle {
+            clearSpectatorState()
+            clearRoomPresentationState()
+            screen = .lobby
+        }
+
         if reconnectNeeded {
             if appSceneActive, reconnectTask == nil, !socket.hasActiveConnection {
                 scheduleReconnect()
