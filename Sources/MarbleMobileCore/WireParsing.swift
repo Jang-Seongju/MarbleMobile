@@ -64,13 +64,19 @@ public enum WireParser {
         }
     }
 
-    public static func socialState(from payload: [String: Any]) -> SocialState {
-        func user(_ raw: [String: Any]) -> SocialUser? {
+    public static func socialUsers(from value: Any?) -> [SocialUser] {
+        (value as? [[String: Any]] ?? []).compactMap { raw in
             guard let id = WireScalarParser.exactInt(raw["user_id"]) else { return nil }
             return SocialUser(userID: id, nickname: (raw["nickname"] as? String) ?? "사용자 \(id)")
         }
+    }
+
+    public static func socialState(from payload: [String: Any]) -> SocialState {
+        func user(_ raw: [String: Any]) -> SocialUser? {
+            socialUsers(from: [raw]).first
+        }
         func users(_ value: Any?) -> [SocialUser] {
-            (value as? [[String: Any]] ?? []).compactMap(user)
+            socialUsers(from: value)
         }
         func requests(_ value: Any?, incoming: Bool) -> [FriendRequest] {
             (value as? [[String: Any]] ?? []).compactMap { raw in

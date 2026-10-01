@@ -138,3 +138,116 @@ public enum ReceivePayloadParser {
         return value
     }
 }
+
+public struct FriendPresenceSnapshot: Equatable, Sendable {
+    public let userID: Int
+    public let nickname: String
+    public let isPresent: Bool
+
+    public init(userID: Int, nickname: String, isPresent: Bool) {
+        self.userID = userID
+        self.nickname = nickname
+        self.isPresent = isPresent
+    }
+}
+
+public struct FriendPresenceTransition: Equatable, Sendable {
+    public let userID: Int
+    public let nickname: String
+    public let isPresent: Bool
+
+    public init(userID: Int, nickname: String, isPresent: Bool) {
+        self.userID = userID
+        self.nickname = nickname
+        self.isPresent = isPresent
+    }
+}
+
+public enum FriendPresenceComparator {
+    public static func snapshot(_ friends: [SocialUser]) -> [Int: FriendPresenceSnapshot] {
+        var result: [Int: FriendPresenceSnapshot] = [:]
+        for friend in friends {
+            let present = friend.connectionStatus == .connected || friend.connectionStatus == .recovering
+            result[friend.userID] = FriendPresenceSnapshot(
+                userID: friend.userID,
+                nickname: friend.nickname,
+                isPresent: present
+            )
+        }
+        return result
+    }
+
+    public static func transitions(
+        previous: [Int: FriendPresenceSnapshot],
+        current: [Int: FriendPresenceSnapshot]
+    ) -> [FriendPresenceTransition] {
+        current.values.compactMap { now in
+            guard let before = previous[now.userID], before.isPresent != now.isPresent else { return nil }
+            return FriendPresenceTransition(userID: now.userID, nickname: now.nickname, isPresent: now.isPresent)
+        }
+        .sorted {
+            if $0.nickname != $1.nickname { return $0.nickname < $1.nickname }
+            return $0.userID < $1.userID
+        }
+    }
+}
+
+public enum SocialPresentationFormatter {
+    public static func friendLabel(_ user: SocialUser) -> String {
+        guard user.connectionStatus == .connected else { return "\(user.nickname), 오프라인" }
+        return user.isGameInProgress ? "\(user.nickname), 게임 중" : "\(user.nickname), 접속 중"
+    }
+}
+
+public enum NotePresentationFormatter {
+    public static func dateTimeText(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "시간 정보 없음" }
+
+        // timezone 정보가 없는 값은 PC와 동일하게 문자열의 벽시각을 사용한다.
+        let pattern = #"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})"#
+        let hasTimezone = value.hasSuffix("Z") || value.range(
+            of: #"[+-]\d{2}:?\d{2}$"#,
+            options: .regularExpression
+        ) != nil
+
+        if hasTimezone, let date = parseISO8601(value) {
+            let calendar = Calendar.current
+            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+            if let year = components.year, let month = components.month, let day = components.day,
+               let hour = components.hour, let minute = components.minute {
+                return formatted(year: year, month: month, day: day, hour: hour, minute: minute)
+            }
+        }
+
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+              match.numberOfRanges == 6 else { return value }
+        func group(_ index: Int) -> Int? {
+            guard let range = Range(match.range(at: index), in: value) else { return nil }
+            return Int(value[range])
+        }
+        guard let year = group(1), let month = group(2), let day = group(3),
+              let hour = group(4), let minute = group(5) else { return value }
+        return formatted(year: year, month: month, day: day, hour: hour, minute: minute)
+    }
+
+    public static func noteRowText(_ note: NoteSnapshot, selfNickname: String) -> String {
+        let sender = note.direction == .sent ? selfNickname : note.counterpart.nickname
+        return "\(sender): \(note.body), \(dateTimeText(note.createdAt))"
+    }
+
+    private static func parseISO8601(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        let standard = ISO8601DateFormatter()
+        standard.formatOptions = [.withInternetDateTime]
+        return standard.date(from: value)
+    }
+
+    private static func formatted(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> String {
+        let period = hour < 12 ? "오전" : "오후"
+        let hour12 = hour % 12 == 0 ? 12 : hour % 12
+        return "\(year)년 \(month)월 \(day)일 \(period) \(hour12)시 \(String(format: "%02d", minute))분"
+    }
+}

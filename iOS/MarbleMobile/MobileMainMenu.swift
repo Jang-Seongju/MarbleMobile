@@ -37,11 +37,17 @@ struct MobileMainMenu: View {
                 }
             }
             Divider()
-            Button("수신 알림") {
+            Button(receiveNotificationTitle) {
                 model.presentReceiveNotifications()
             }
             .disabled(context == .login || model.session == nil)
         }
+    }
+
+
+    private var receiveNotificationTitle: String {
+        let count = model.receiveNotificationTotalCount
+        return count > 0 ? "수신 알림 \(count)" : "수신 알림"
     }
 
     private func isEnabled(_ command: MainMenuCommand) -> Bool {

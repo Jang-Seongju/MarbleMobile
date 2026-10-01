@@ -80,10 +80,16 @@ final class AppModel: ObservableObject {
     @Published var activePrivateMessageUserID: Int?
     @Published var preferredPrivateMessageUserID: Int?
     @Published var preferredNoteUserID: Int?
+    @Published var preferredFriendRequestID: Int?
+    @Published private(set) var noteRecipientSearchResults: [SocialUser] = []
     private var notifiedNoteIDs: Set<Int> = []
     private var notifiedFriendRequestIDs: Set<Int> = []
     private var pendingFriendRequestReadIDs: Set<Int> = []
     private var pendingNoteReadIDs: Set<Int> = []
+    private var userPresenceLoaded = false
+    private var socialStateLoaded = false
+    private var friendPresenceBaselined = false
+    private var friendPresenceSnapshot: [Int: FriendPresenceSnapshot] = [:]
     @Published private(set) var pendingInvitationID: Int?
     private var pendingInvitationType: GameInvitationType?
     @Published var alertMessage: String?
@@ -267,9 +273,11 @@ final class AppModel: ObservableObject {
     var unreadNoteCount: Int { notes.filter { $0.direction == .received && !$0.isRead }.count }
     var unreadFriendRequestCount: Int { socialState.incomingRequests.filter { !$0.isRead }.count }
 
-    var hasReceiveNotifications: Bool {
-        unreadPrivateMessageSenderCount > 0 || unreadNoteCount > 0 || !invitations.isEmpty || unreadFriendRequestCount > 0
+    var receiveNotificationTotalCount: Int {
+        unreadPrivateMessageSenderCount + unreadNoteCount + invitations.count + unreadFriendRequestCount
     }
+
+    var hasReceiveNotifications: Bool { receiveNotificationTotalCount > 0 }
 
     var isInvitationInboxPresented: Bool { utilitySheet == .invitations }
     var isPrivateMessagesPresented: Bool { utilitySheet == .privateMessages }
@@ -295,6 +303,8 @@ final class AppModel: ObservableObject {
     }
 
     func openFriendRequestsFromNotifications() {
+        preferredFriendRequestID = socialState.incomingRequests.first(where: { !$0.isRead })?.requestID
+            ?? socialState.incomingRequests.first?.requestID
         utilitySheet = .friendManagement
     }
 
@@ -342,6 +352,27 @@ final class AppModel: ObservableObject {
         socket.send(WireMessages.noteSend(targetUserID: targetUserID, body: body))
     }
 
+    func searchNoteRecipients(_ query: String) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            announce("검색할 닉네임을 입력해 주세요.")
+            return
+        }
+        socket.send(WireMessages.noteRecipientSearch(query: query))
+    }
+
+    func clearNoteRecipientSearchResults() {
+        noteRecipientSearchResults.removeAll()
+    }
+
+    func deleteNote(_ noteID: Int) {
+        socket.send(WireMessages.noteDelete(noteID: noteID))
+    }
+
+    func deleteNoteConversation(userID: Int) {
+        socket.send(WireMessages.noteDeleteConversation(targetUserID: userID))
+    }
+
     func markNoteRead(_ noteID: Int) {
         guard let note = notes.first(where: { $0.noteID == noteID }), note.direction == .received,
               !note.isRead, !pendingNoteReadIDs.contains(noteID) else { return }
@@ -354,6 +385,16 @@ final class AppModel: ObservableObject {
               !request.isRead, !pendingFriendRequestReadIDs.contains(requestID) else { return }
         pendingFriendRequestReadIDs.insert(requestID)
         socket.send(WireMessages.friendRequestMarkRead(requestID: requestID))
+    }
+
+    func searchSocialUsers(_ query: String) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            announce("검색할 닉네임을 입력해 주세요.")
+            return
+        }
+        socialState.searchQuery = query
+        socket.send(WireMessages.socialSearchUsers(query: query))
     }
 
     func acceptFriendRequest(_ requestID: Int) {
@@ -2575,6 +2616,12 @@ final class AppModel: ObservableObject {
             handleNoteSent(data)
         case "note_marked_read":
             handleNoteMarkedRead(data)
+        case "note_recipient_search_result":
+            noteRecipientSearchResults = WireParser.socialUsers(from: data["users"])
+        case "note_deleted":
+            handleNoteDeleted(data)
+        case "note_conversation_deleted":
+            handleNoteConversationDeleted(data)
         case "room_chat":
             if let chat = try? RoomChatParser.parse(data) {
                 roomMessages.append(.chat("\(chat.fromNickname): \(chat.message)"))
@@ -2591,7 +2638,12 @@ final class AppModel: ObservableObject {
         case "room_left":
             handleRoomLeft(data)
         case "user_list":
-            if let parsed = try? WireParser.lobbyUsers(from: data) { users = parsed }
+            if let parsed = try? WireParser.lobbyUsers(from: data) {
+                users = parsed
+                userPresenceLoaded = true
+                socialState.mergePresence(parsed)
+                syncFriendPresenceNotifications(notify: true)
+            }
         case "room_list":
             if let parsed = try? WireParser.rooms(from: data) { rooms = parsed }
         case "invitation_received":
@@ -2604,12 +2656,17 @@ final class AppModel: ObservableObject {
             handleInvitationError(data)
         case "social_state":
             handleSocialState(data)
+        case "social_search_result":
+            handleSocialSearchResult(data)
         case "friend_request_received":
             handleFriendRequestReceived(data)
         case "friend_request_marked_read":
             handleFriendRequestMarkedRead(data)
         case "friend_request_sent", "friend_request_removed", "friendship_added", "friendship_removed", "user_blocked", "user_unblocked", "social_state_changed":
             requestSocialState()
+            if !socialState.searchQuery.isEmpty {
+                socket.send(WireMessages.socialSearchUsers(query: socialState.searchQuery))
+            }
         case "social_error":
             if data["request_type"] as? String == "friend_request_mark_read" {
                 pendingFriendRequestReadIDs.removeAll()
@@ -2764,6 +2821,29 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func handleNoteDeleted(_ data: [String: Any]) {
+        guard let noteID = WireScalarParser.exactInt(data["note_id"]) else { return }
+        let mailbox = data["mailbox"] as? String
+        notes.removeAll { note in
+            guard note.noteID == noteID else { return false }
+            if mailbox == "received" { return note.direction == .received }
+            if mailbox == "sent" { return note.direction == .sent }
+            return true
+        }
+        pendingNoteReadIDs.remove(noteID)
+        notifiedNoteIDs.remove(noteID)
+        output.emit(.systemTTS("쪽지를 삭제했습니다.", preservePending: true))
+    }
+
+    private func handleNoteConversationDeleted(_ data: [String: Any]) {
+        guard let userID = WireScalarParser.exactInt(data["target_user_id"]) else { return }
+        let removedIDs = Set(notes.filter { $0.counterpart.userID == userID }.map(\.noteID))
+        notes.removeAll { $0.counterpart.userID == userID }
+        pendingNoteReadIDs.subtract(removedIDs)
+        notifiedNoteIDs.subtract(removedIDs)
+        output.emit(.systemTTS("이 사람과의 쪽지를 삭제했습니다.", preservePending: true))
+    }
+
     private func upsertNote(_ note: NoteSnapshot) {
         notes.removeAll(where: { $0.noteID == note.noteID && $0.direction == note.direction })
         notes.append(note)
@@ -2776,7 +2856,10 @@ final class AppModel: ObservableObject {
     }
 
     private func handleSocialState(_ data: [String: Any]) {
-        let parsed = WireParser.socialState(from: data)
+        var parsed = WireParser.socialState(from: data)
+        parsed.searchQuery = socialState.searchQuery
+        parsed.searchResults = socialState.searchResults
+        parsed.mergePresence(users)
         let unreadIDs = Set(parsed.incomingRequests.filter { !$0.isRead }.map(\.requestID))
         pendingFriendRequestReadIDs.formIntersection(unreadIDs)
         let unseen = parsed.incomingRequests.filter {
@@ -2784,8 +2867,45 @@ final class AppModel: ObservableObject {
         }
         notifiedFriendRequestIDs.formUnion(unseen.map(\.requestID))
         socialState = parsed
+        socialStateLoaded = true
+        syncFriendPresenceNotifications(notify: false)
         if !unseen.isEmpty {
             output.emit(.systemTTS("새 친구 요청이 \(unseen.count)개 있습니다.", preservePending: true))
+        }
+    }
+
+    private func handleSocialSearchResult(_ data: [String: Any]) {
+        socialState.searchQuery = (data["query"] as? String) ?? socialState.searchQuery
+        socialState.searchResults = WireParser.socialUsers(from: data["users"])
+        socialState.mergePresence(users)
+    }
+
+    private func syncFriendPresenceNotifications(notify: Bool) {
+        guard userPresenceLoaded, socialStateLoaded else { return }
+        let current = FriendPresenceComparator.snapshot(socialState.friends)
+        guard friendPresenceBaselined else {
+            friendPresenceSnapshot = current
+            friendPresenceBaselined = true
+            return
+        }
+        let changes = notify
+            ? FriendPresenceComparator.transitions(previous: friendPresenceSnapshot, current: current)
+            : []
+        friendPresenceSnapshot = current
+        for change in changes {
+            let clip = change.isPresent ? "friend_on.wav" : "friend_out.wav"
+            let message = change.isPresent
+                ? "\(change.nickname)님이 게임에 들어왔습니다."
+                : "\(change.nickname)님이 게임을 나갔습니다."
+            output.emit(PresentationPlan(
+                root: .parallel([
+                    .sfx(clip: clip, completion: .startOnly),
+                    .tts(message)
+                ]),
+                category: .systemUI,
+                queuePolicy: .enqueue,
+                interruptRetention: .preservePending
+            ))
         }
     }
 
@@ -2796,13 +2916,10 @@ final class AppModel: ObservableObject {
         }
         socialState.incomingRequests.removeAll(where: { $0.requestID == request.requestID })
         socialState.incomingRequests.append(request)
+        socialState.mergePresence(users)
         notifiedFriendRequestIDs.insert(request.requestID)
 
-        let isActive = isFriendManagementPresented
-        if isActive { markFriendRequestRead(request.requestID) }
-        let message = isActive
-            ? "\(request.user.nickname)님에게 친구 요청이 도착했습니다."
-            : "새 친구 요청이 도착했습니다."
+        let message = "새 친구 요청이 도착했습니다."
         output.emit(PresentationPlan(
             root: .parallel([
                 .sfx(clip: "frendship.wav", completion: .startOnly),
@@ -2813,6 +2930,9 @@ final class AppModel: ObservableObject {
             interruptRetention: .preservePending
         ))
         requestSocialState()
+        if !socialState.searchQuery.isEmpty {
+            socket.send(WireMessages.socialSearchUsers(query: socialState.searchQuery))
+        }
     }
 
     private func handleFriendRequestMarkedRead(_ data: [String: Any]) {
@@ -3475,6 +3595,12 @@ final class AppModel: ObservableObject {
         activePrivateMessageUserID = nil
         preferredPrivateMessageUserID = nil
         preferredNoteUserID = nil
+        preferredFriendRequestID = nil
+        noteRecipientSearchResults.removeAll()
+        userPresenceLoaded = false
+        socialStateLoaded = false
+        friendPresenceBaselined = false
+        friendPresenceSnapshot.removeAll()
     }
 
     private func roomSoundClip(for event: String?) -> String? {

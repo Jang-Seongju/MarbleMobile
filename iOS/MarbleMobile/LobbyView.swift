@@ -98,7 +98,7 @@ struct LobbyView: View {
                 Text(model.pendingSocialConfirmation?.message ?? "")
             }
             .sheet(isPresented: Binding(
-                get: { model.profileText != nil },
+                get: { model.profileText != nil && model.utilitySheet == nil },
                 set: { if !$0 { model.profileText = nil } }
             )) {
                 NavigationStack {

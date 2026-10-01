@@ -85,6 +85,18 @@ public enum WireMessages {
         ["type": "note_mark_read", "note_id": noteID]
     }
 
+    public static func noteRecipientSearch(query: String) -> [String: Any] {
+        ["type": "note_recipient_search", "query": query.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
+    public static func noteDelete(noteID: Int) -> [String: Any] {
+        ["type": "note_delete", "note_id": noteID]
+    }
+
+    public static func noteDeleteConversation(targetUserID: Int) -> [String: Any] {
+        ["type": "note_delete_conversation", "target_user_id": targetUserID]
+    }
+
     public static func friendRequestMarkRead(requestID: Int) -> [String: Any] {
         ["type": "friend_request_mark_read", "request_id": requestID]
     }
@@ -103,6 +115,10 @@ public enum WireMessages {
 
     public static func invitationAccept(inviteID: Int) -> [String: Any] {
         ["type": "invitation_accept", "invite_id": inviteID]
+    }
+
+    public static func socialSearchUsers(query: String) -> [String: Any] {
+        ["type": "social_search_users", "query": query]
     }
 
     public static func friendRequestSend(targetUserID: Int) -> [String: Any] {
