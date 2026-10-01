@@ -77,7 +77,7 @@ private struct PrivateConversationView: View {
         }
         .navigationTitle("\(conversation?.nickname ?? "사용자")님과의 대화")
         .onAppear {
-            if let conversation {
+            if conversation != nil {
                 model.activatePrivateConversation(userID: userID)
             }
         }

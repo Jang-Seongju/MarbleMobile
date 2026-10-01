@@ -155,12 +155,22 @@ private struct NoteConversationView: View {
     }
 
     private var nickname: String {
-        conversationNotes.first?.counterpart.nickname
-            ?? model.socialState.friends.first(where: { $0.userID == userID })?.nickname
-            ?? model.socialState.incomingRequest(for: userID)?.user.nickname
-            ?? model.socialState.outgoingRequest(for: userID)?.user.nickname
-            ?? model.users.first(where: { $0.id == userID })?.nickname
-            ?? "사용자 \(userID)"
+        if let nickname = conversationNotes.first?.counterpart.nickname {
+            return nickname
+        }
+        if let nickname = model.socialState.friends.first(where: { $0.userID == userID })?.nickname {
+            return nickname
+        }
+        if let nickname = model.socialState.incomingRequest(for: userID)?.user.nickname {
+            return nickname
+        }
+        if let nickname = model.socialState.outgoingRequest(for: userID)?.user.nickname {
+            return nickname
+        }
+        if let nickname = model.users.first(where: { $0.id == userID })?.nickname {
+            return nickname
+        }
+        return "사용자 \(userID)"
     }
 
     private var canSend: Bool {
