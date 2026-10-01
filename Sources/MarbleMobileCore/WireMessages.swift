@@ -73,6 +73,14 @@ public enum WireMessages {
         ["type": "invitation_send", "target_user_id": targetUserID, "invite_type": inviteType]
     }
 
+    public static func invitationSend(targetUserID: Int, inviteType: GameInvitationType) -> [String: Any] {
+        invitationSend(targetUserID: targetUserID, inviteType: inviteType.rawValue)
+    }
+
+    public static func invitationAccept(inviteID: Int) -> [String: Any] {
+        ["type": "invitation_accept", "invite_id": inviteID]
+    }
+
     public static func friendRequestSend(targetUserID: Int) -> [String: Any] {
         ["type": "friend_request_send", "target_user_id": targetUserID]
     }

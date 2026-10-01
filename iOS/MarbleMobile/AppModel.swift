@@ -49,6 +49,10 @@ final class AppModel: ObservableObject {
     @Published var users: [LobbyUser] = []
     @Published var rooms: [GameRoomSummary] = []
     @Published var socialState = SocialState()
+    @Published private(set) var invitations: [GameInvitation] = []
+    @Published var isInvitationInboxPresented = false
+    @Published private(set) var pendingInvitationID: Int?
+    private var pendingInvitationType: GameInvitationType?
     @Published var alertMessage: String?
     @Published var profileText: String?
     @Published var pendingSocialConfirmation: SocialConfirmation?
@@ -191,6 +195,7 @@ final class AppModel: ObservableObject {
             users = []
             rooms = []
             socialState = .init()
+            clearInvitationState()
             screen = .lobby
             output.emit(PresentationPlan(
                 root: .sfx(clip: "login.WAV", completion: .startOnly),
@@ -223,6 +228,76 @@ final class AppModel: ObservableObject {
 
     func requestSocialState() { socket.send(WireMessages.socialGetState()) }
 
+    func presentInvitationInbox() {
+        guard !invitations.isEmpty else { return }
+        isInvitationInboxPresented = true
+    }
+
+    func dismissInvitationInbox() {
+        // PC client(393)의 초대 창 닫기와 동일하게 서버에 거절 요청을 보내지 않고
+        // 현재 로컬 목록만 폐기한다. 이미 전송한 수락 요청은 취소하지 않는다.
+        isInvitationInboxPresented = false
+        invitations.removeAll()
+    }
+
+    func acceptInvitation(_ invitation: GameInvitation) {
+        guard entryPhase == .active, pendingInvitationID == nil,
+              invitations.contains(where: { $0.inviteID == invitation.inviteID })
+        else { return }
+
+        if invitation.inviteType == .spectator {
+            guard prepareSpectatorInvitationJoin(invitation) else { return }
+        }
+
+        pendingInvitationID = invitation.inviteID
+        pendingInvitationType = invitation.inviteType
+        socket.send(WireMessages.invitationAccept(inviteID: invitation.inviteID))
+    }
+
+    func invitationRoomInfoText(_ invitation: GameInvitation) -> String {
+        let participantNames: [String]?
+        if let roomUpdate, roomUpdate.roomID == invitation.room.roomID {
+            participantNames = roomUpdate.teams.flatMap(\.members).map(\.nickname)
+        } else {
+            participantNames = nil
+        }
+
+        if let cached = rooms.first(where: { $0.id == invitation.room.roomID }) {
+            return PresentationFormatter.roomInfoText(cached, participantNames: participantNames)
+        }
+        let fallback = GameRoomSummary(
+            id: invitation.room.roomID,
+            title: invitation.room.title,
+            current: nil,
+            maxPlayers: nil,
+            isPrivate: invitation.room.isPrivate,
+            status: nil
+        )
+        return PresentationFormatter.roomInfoText(fallback, participantNames: participantNames)
+    }
+
+    private func prepareSpectatorInvitationJoin(_ invitation: GameInvitation) -> Bool {
+        guard invitation.inviteType == .spectator,
+              let target = invitation.spectatorTarget,
+              spectatorPhase == .idle
+        else {
+            alertMessage = "다른 관중석 입장 처리가 진행 중입니다."
+            return false
+        }
+
+        let request = SpectatorEntryRequest(
+            roomID: invitation.room.roomID,
+            isPrivate: invitation.room.isPrivate
+        )
+        spectatorEntryRequest = request
+        spectatorJoinExpectation = .init(request: request, target: target)
+        pendingSpectatorTargetList = nil
+        pendingSpectatorPasswordTarget = nil
+        spectatorErrorMessage = nil
+        spectatorPhase = .joinPending
+        return true
+    }
+
     func performUserAction(_ action: LobbyUserActionKind, user: LobbyUser) {
         guard let session else { return }
         switch action {
@@ -234,9 +309,9 @@ final class AppModel: ObservableObject {
         case .note:
             alertMessage = "쪽지 작성 화면은 2차 UI 범위에서 구현합니다."
         case .roomInvite:
-            socket.send(WireMessages.invitationSend(targetUserID: user.id, inviteType: "room"))
+            socket.send(WireMessages.invitationSend(targetUserID: user.id, inviteType: .room))
         case .spectatorInvite:
-            socket.send(WireMessages.invitationSend(targetUserID: user.id, inviteType: "spectator"))
+            socket.send(WireMessages.invitationSend(targetUserID: user.id, inviteType: .spectator))
         case .friendRequest:
             socket.send(WireMessages.friendRequestSend(targetUserID: user.id))
         case .friendAccept:
@@ -2361,16 +2436,26 @@ final class AppModel: ObservableObject {
             if let parsed = try? WireParser.lobbyUsers(from: data) { users = parsed }
         case "room_list":
             if let parsed = try? WireParser.rooms(from: data) { rooms = parsed }
+        case "invitation_received":
+            handleInvitationReceived(data)
+        case "invitation_sent":
+            handleInvitationSent(data)
+        case "invitation_consumed":
+            handleInvitationConsumed(data)
+        case "invitation_error":
+            handleInvitationError(data)
         case "social_state":
             socialState = WireParser.socialState(from: data)
         case "friend_request_sent", "friend_request_received", "friend_request_removed", "friendship_added", "friendship_removed", "user_blocked", "user_unblocked", "social_state_changed":
             requestSocialState()
-        case "social_error", "chat_error", "invitation_error", "note_error":
+        case "social_error", "chat_error", "note_error":
             if let message = data["message"] as? String { alertMessage = message }
         case "error":
             if let message = data["message"] as? String {
                 let requestType = data["request_type"] as? String
-                if requestType == "get_spectator_targets" && spectatorPhase == .targetListPending {
+                if requestType == "invitation_accept" && pendingInvitationID != nil {
+                    finishInvitationAcceptanceForRetry(message: message)
+                } else if requestType == "get_spectator_targets" && spectatorPhase == .targetListPending {
                     resetPendingSpectatorEntry()
                     alertMessage = message
                 } else if requestType == "join_spectator" && spectatorPhase == .joinPending {
@@ -2417,6 +2502,85 @@ final class AppModel: ObservableObject {
         }
     }
 
+
+    private func handleInvitationReceived(_ data: [String: Any]) {
+        guard let invitation = try? InvitationParser.received(data) else { return }
+        let inboxWasActive = isInvitationInboxPresented
+
+        invitations.removeAll(where: { invitation.replaces($0) })
+        invitations.append(invitation)
+
+        let message: String
+        if inboxWasActive {
+            message = "\(invitation.inviter.nickname)님이 \(invitation.room.title) \(invitation.inviteType.koreanKind)으로 초대했습니다."
+        } else {
+            message = "새 초대가 도착했습니다."
+        }
+        output.emit(PresentationPlan(
+            root: .parallel([
+                .sfx(clip: "invitation.wav", completion: .startOnly),
+                .tts(message)
+            ]),
+            category: .systemUI,
+            queuePolicy: .enqueue,
+            interruptRetention: .preservePending
+        ))
+    }
+
+    private func handleInvitationSent(_ data: [String: Any]) {
+        guard let sent = try? InvitationParser.sent(data) else { return }
+        output.emit(.systemTTS(
+            "\(sent.targetNickname)님에게 \(sent.inviteType.koreanKind) 초대를 보냈습니다.",
+            preservePending: true
+        ))
+    }
+
+    private func handleInvitationConsumed(_ data: [String: Any]) {
+        guard (try? InvitationParser.consumed(data)) != nil else { return }
+        // 서버는 성공 수락 뒤 이 사용자가 받았던 다른 capability도 모두 폐기한다.
+        // PC client(393)도 성공 시 초대 창 전체를 닫는다.
+        clearInvitationState()
+    }
+
+    private func handleInvitationError(_ data: [String: Any]) {
+        guard let message = data["message"] as? String, !message.isEmpty else { return }
+        let requestType = data["request_type"] as? String
+        let inviteID = WireScalarParser.exactInt(data["invite_id"])
+
+        if requestType == "invitation_accept" {
+            if let inviteID {
+                // invite_id가 있는 invitation_error는 서버 capability 자체가 더 이상
+                // 유효하지 않다는 뜻이므로 해당 한 항목만 제거한다.
+                invitations.removeAll(where: { $0.inviteID == inviteID })
+                if invitations.isEmpty { isInvitationInboxPresented = false }
+            }
+            if pendingInvitationID != nil,
+               inviteID == nil || inviteID == pendingInvitationID {
+                finishInvitationAcceptanceForRetry(message: message)
+                return
+            }
+        }
+
+        alertMessage = message
+        output.emit(.systemTTS(message, preservePending: true))
+    }
+
+    private func finishInvitationAcceptanceForRetry(message: String) {
+        if pendingInvitationType == .spectator, spectatorPhase == .joinPending {
+            resetPendingSpectatorEntry()
+        }
+        pendingInvitationID = nil
+        pendingInvitationType = nil
+        alertMessage = message
+        output.emit(.systemTTS(message, preservePending: true))
+    }
+
+    private func clearInvitationState() {
+        invitations.removeAll()
+        isInvitationInboxPresented = false
+        pendingInvitationID = nil
+        pendingInvitationType = nil
+    }
 
     private func handleSessionEntry(_ data: [String: Any]) {
         do {
@@ -2857,6 +3021,10 @@ final class AppModel: ObservableObject {
     private func handleDisconnect(_ message: String) {
         guard screen != .login, session != nil else { return }
 
+        // 초대 capability는 실시간 일시 상태다. 재접속 시 서버가 목록을 재전송하는
+        // 계약이 없으므로 끊긴 연결의 로컬 알림 목록을 복구 대상으로 취급하지 않는다.
+        clearInvitationState()
+
         // 관중석은 서버 계약상 복구 대상이 아니다. 연결이 끊기면 서버 등록도
         // 제거되므로 참가자 recovery 상태를 보존하지 않고 로컬 관람만 정리한다.
         if spectatorRegistration != nil || spectatorPhase != .idle {
@@ -2958,6 +3126,7 @@ final class AppModel: ObservableObject {
         isRoomJoinPending = false
         roomJoinErrorMessage = nil
         isRoomEntryRecoveryPending = false
+        clearInvitationState()
         clearRoomState()
     }
 

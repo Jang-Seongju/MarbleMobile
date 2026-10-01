@@ -2179,3 +2179,144 @@ extension Phase1CoreTests {
     }
 
 }
+
+extension Phase1CoreTests {
+    func testInvitationWireMessagesMatchServer678Contract() {
+        XCTAssertEqual(
+            WireMessages.invitationSend(targetUserID: 7, inviteType: .room) as NSDictionary,
+            ["type": "invitation_send", "target_user_id": 7, "invite_type": "room"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.invitationSend(targetUserID: 8, inviteType: .spectator) as NSDictionary,
+            ["type": "invitation_send", "target_user_id": 8, "invite_type": "spectator"] as NSDictionary
+        )
+        XCTAssertEqual(
+            WireMessages.invitationAccept(inviteID: 19) as NSDictionary,
+            ["type": "invitation_accept", "invite_id": 19] as NSDictionary
+        )
+    }
+
+    func testRoomInvitationParsingAndLabelMatchClient393() throws {
+        let invitation = try InvitationParser.received([
+            "type": "invitation_received",
+            "invite_id": 11,
+            "invite_type": "room",
+            "inviter": ["user_id": 2, "nickname": "민수"],
+            "room": ["room_id": 7, "title": "친선전", "is_private": true],
+        ])
+        XCTAssertEqual(invitation.inviteID, 11)
+        XCTAssertEqual(invitation.inviteType, .room)
+        XCTAssertNil(invitation.spectatorTarget)
+        XCTAssertEqual(invitation.listLabel, "민수 - 7번 친선전 방으로 초대")
+    }
+
+    func testSpectatorInvitationParsingPreservesObservedUserCapability() throws {
+        let invitation = try InvitationParser.received([
+            "type": "invitation_received",
+            "invite_id": 12,
+            "invite_type": "spectator",
+            "inviter": ["user_id": 2, "nickname": "민수"],
+            "room": ["room_id": 7, "title": "친선전", "is_private": true],
+            "spectator_target": ["observed_user_id": 5, "nickname": "경석"],
+        ])
+        XCTAssertEqual(invitation.inviteType, .spectator)
+        XCTAssertEqual(invitation.spectatorTarget, .init(observedUserID: 5, nickname: "경석"))
+        XCTAssertEqual(invitation.listLabel, "민수 - 7번 친선전 방 관중석으로 초대")
+    }
+
+    func testInvitationParserRejectsMalformedOrMismatchedPayloads() {
+        XCTAssertThrowsError(try InvitationParser.received([
+            "type": "invitation_received",
+            "invite_id": 1,
+            "invite_type": "spectator",
+            "inviter": ["user_id": 2, "nickname": "민수"],
+            "room": ["room_id": 7, "title": "친선전", "is_private": true],
+        ]))
+        XCTAssertThrowsError(try InvitationParser.received([
+            "type": "invitation_received",
+            "invite_id": 1,
+            "invite_type": "room",
+            "inviter": ["user_id": 2, "nickname": "민수"],
+            "room": ["room_id": 7, "title": "친선전", "is_private": 1],
+        ]))
+        XCTAssertThrowsError(try InvitationParser.received([
+            "type": "invitation_received",
+            "invite_id": 1,
+            "invite_type": "room",
+            "inviter": ["user_id": 2, "nickname": "민수"],
+            "room": ["room_id": 7, "title": "친선전", "is_private": false],
+            "spectator_target": ["observed_user_id": 5, "nickname": "경석"],
+        ]))
+    }
+
+    func testRepeatedInvitationIdentityReplacesOnlySameSenderRoomAndType() {
+        let first = GameInvitation(
+            inviteID: 1,
+            inviteType: .room,
+            inviter: .init(userID: 2, nickname: "민수"),
+            room: .init(roomID: 7, title: "친선전", isPrivate: false)
+        )
+        let replacement = GameInvitation(
+            inviteID: 2,
+            inviteType: .room,
+            inviter: .init(userID: 2, nickname: "민수"),
+            room: .init(roomID: 7, title: "친선전", isPrivate: false)
+        )
+        let spectator = GameInvitation(
+            inviteID: 3,
+            inviteType: .spectator,
+            inviter: .init(userID: 2, nickname: "민수"),
+            room: .init(roomID: 7, title: "친선전", isPrivate: false),
+            spectatorTarget: .init(observedUserID: 2, nickname: "민수")
+        )
+        XCTAssertTrue(replacement.replaces(first))
+        XCTAssertFalse(spectator.replaces(first))
+    }
+
+    func testInvitationSentAndConsumedParsingMatchServer678() throws {
+        let sent = try InvitationParser.sent([
+            "type": "invitation_sent",
+            "invite_id": 21,
+            "invite_type": "spectator",
+            "target_user_id": 8,
+            "target_nickname": "경석",
+            "room_id": 7,
+            "room_title": "친선전",
+        ])
+        XCTAssertEqual(sent.inviteType, .spectator)
+        XCTAssertEqual(sent.targetNickname, "경석")
+
+        let consumed = try InvitationParser.consumed([
+            "type": "invitation_consumed",
+            "invite_id": 21,
+            "invite_type": "spectator",
+            "room_id": 7,
+        ])
+        XCTAssertEqual(consumed.inviteID, 21)
+        XCTAssertEqual(consumed.roomID, 7)
+    }
+}
+
+extension Phase1CoreTests {
+    func testInvitationMenuAvailabilityMatchesClient393ParticipantAndSpectatorContexts() throws {
+        let participant = LobbyActionBuilder.userActions(
+            targetUserID: 2,
+            currentUserID: 1,
+            socialState: .init(),
+            hasGameRoom: true,
+            isSpectator: false
+        )
+        XCTAssertTrue(try XCTUnwrap(participant.first(where: { $0.kind == .roomInvite })).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(participant.first(where: { $0.kind == .spectatorInvite })).isEnabled)
+
+        let spectator = LobbyActionBuilder.userActions(
+            targetUserID: 2,
+            currentUserID: 1,
+            socialState: .init(),
+            hasGameRoom: true,
+            isSpectator: true
+        )
+        XCTAssertFalse(try XCTUnwrap(spectator.first(where: { $0.kind == .roomInvite })).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(spectator.first(where: { $0.kind == .spectatorInvite })).isEnabled)
+    }
+}

@@ -31,6 +31,9 @@ struct LobbyView: View {
             .navigationTitle("마블 게임 - 대기실")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if !model.invitations.isEmpty {
+                        Button("초대 \(model.invitations.count)개") { model.presentInvitationInbox() }
+                    }
                     if model.canShowGameRoom {
                         Button(model.isSpectating ? "관중석 보기" : "게임방 보기") { model.showGameRoom() }
                     }
@@ -166,8 +169,8 @@ struct LobbyView: View {
             isSpectator: model.isSpectating,
             messageImplemented: false,
             noteImplemented: false,
-            roomInvitationImplemented: false,
-            spectatorInvitationImplemented: false,
+            roomInvitationImplemented: true,
+            spectatorInvitationImplemented: true,
             socialInteractionImplemented: false
         )
 

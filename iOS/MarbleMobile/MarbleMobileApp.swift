@@ -34,5 +34,14 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, newPhase in
             model.setApplicationSceneActive(newPhase == .active)
         }
+        .sheet(isPresented: Binding(
+            get: { model.isInvitationInboxPresented },
+            set: { presented in
+                if !presented { model.dismissInvitationInbox() }
+            }
+        )) {
+            InvitationInboxView()
+                .environmentObject(model)
+        }
     }
 }
