@@ -61,7 +61,9 @@ struct NoteMailboxView: View {
                 case .conversation(let userID):
                     NoteConversationView(userID: userID)
                 case .compose:
-                    NewNoteComposeView()
+                    NewNoteComposeView { userID in
+                        path = [.conversation(userID)]
+                    }
                 }
             }
             .toolbar {
@@ -223,9 +225,12 @@ private struct NoteConversationView: View {
 
 private struct NewNoteComposeView: View {
     @EnvironmentObject private var model: AppModel
+    let onFirstSendSucceeded: (Int) -> Void
     @State private var searchText = ""
     @State private var selectedRecipient: SocialUser?
     @State private var draft = ""
+    @State private var pendingSendRecipientID: Int?
+    @State private var sentNoteIDsBeforeSend: Set<Int> = []
     @AccessibilityFocusState private var focusedSearchResultID: Int?
     @AccessibilityFocusState private var searchFieldFocused: Bool
 
@@ -234,7 +239,9 @@ private struct NewNoteComposeView: View {
     }
 
     private var canSend: Bool {
-        selectedRecipient != nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        pendingSendRecipientID == nil
+            && selectedRecipient != nil
+            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -283,6 +290,19 @@ private struct NewNoteComposeView: View {
                 }
             }
         }
+        .onChange(of: model.notes) { _, notes in
+            guard let userID = pendingSendRecipientID else { return }
+            let succeeded = notes.contains { note in
+                note.direction == .sent
+                    && note.counterpart.userID == userID
+                    && !sentNoteIDsBeforeSend.contains(note.noteID)
+            }
+            guard succeeded else { return }
+            pendingSendRecipientID = nil
+            sentNoteIDsBeforeSend.removeAll()
+            draft = ""
+            onFirstSendSucceeded(userID)
+        }
     }
 
     private func search() {
@@ -292,10 +312,14 @@ private struct NewNoteComposeView: View {
     }
 
     private func send() {
-        guard let recipient = selectedRecipient else { return }
+        guard pendingSendRecipientID == nil, let recipient = selectedRecipient else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        sentNoteIDsBeforeSend = Set(model.notes.compactMap { note in
+            guard note.direction == .sent, note.counterpart.userID == recipient.userID else { return nil }
+            return note.noteID
+        })
+        pendingSendRecipientID = recipient.userID
         model.sendNote(targetUserID: recipient.userID, body: text)
-        draft = ""
     }
 }
