@@ -69,6 +69,30 @@ public enum WireMessages {
         ["type": "social_get_state"]
     }
 
+    public static func privateChat(targetUserID: Int, message: String) -> [String: Any] {
+        ["type": "chat", "target_id": targetUserID, "message": message]
+    }
+
+    public static func noteMailboxGet() -> [String: Any] {
+        ["type": "note_mailbox_get"]
+    }
+
+    public static func noteSend(targetUserID: Int, body: String) -> [String: Any] {
+        ["type": "note_send", "target_user_id": targetUserID, "body": body]
+    }
+
+    public static func noteMarkRead(noteID: Int) -> [String: Any] {
+        ["type": "note_mark_read", "note_id": noteID]
+    }
+
+    public static func friendRequestMarkRead(requestID: Int) -> [String: Any] {
+        ["type": "friend_request_mark_read", "request_id": requestID]
+    }
+
+    public static func friendRequestReject(requestID: Int) -> [String: Any] {
+        ["type": "friend_request_reject", "request_id": requestID]
+    }
+
     public static func invitationSend(targetUserID: Int, inviteType: String) -> [String: Any] {
         ["type": "invitation_send", "target_user_id": targetUserID, "invite_type": inviteType]
     }

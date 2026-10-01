@@ -29,6 +29,9 @@ struct InvitationInboxView: View {
                 }
             }
         }
+        .onDisappear {
+            model.dismissInvitationInbox()
+        }
         .sheet(isPresented: Binding(
             get: { roomInfoText != nil },
             set: { presented in

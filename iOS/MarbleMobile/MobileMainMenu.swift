@@ -36,6 +36,11 @@ struct MobileMainMenu: View {
                     }
                 }
             }
+            Divider()
+            Button("수신 알림") {
+                model.presentReceiveNotifications()
+            }
+            .disabled(context == .login || model.session == nil)
         }
     }
 
@@ -55,11 +60,13 @@ struct MobileMainMenu: View {
             switch command {
             case .logout:
                 return model.session != nil
+            case .notes, .friends:
+                return model.entryPhase == .active
             case .roomInfo:
                 return model.entryPhase == .active
             case .myProfile:
                 return model.entryPhase == .active && model.session != nil
-            // 쪽지함/친구 관리/순위/게임 기록/미디어/수신 설정과 관전자 전환은
+            // 순위/게임 기록/미디어/수신 설정과 관전자 전환은
             // 후속 PC 기능 이식 단계에서 이 command 자리를 그대로 활성화한다.
             default:
                 return false
@@ -75,6 +82,8 @@ struct MobileMainMenu: View {
                 return model.canRequestGameStart
             case .showLobby:
                 return model.entryPhase == .active && model.isInGameRoom
+            case .notes, .friends:
+                return model.entryPhase == .active
             // 현재 게임방에서의 방 정보/내 정보 창, 방 관리 및 나머지 부가기능은
             // 후속 이식 단계에서 연결한다.
             default:
@@ -105,7 +114,11 @@ struct MobileMainMenu: View {
             model.performRoomAction(.roomInfo, room: room)
         case .myProfile:
             model.openMyProfile()
-        case .notes, .friends, .ranking, .gameRecords, .exit,
+        case .notes:
+            model.openNoteMailbox()
+        case .friends:
+            model.utilitySheet = .friendManagement
+        case .ranking, .gameRecords, .exit,
              .participateRoom, .roomManagement, .mediaManagement, .receiveSettings:
             break
         }

@@ -72,18 +72,19 @@ public enum WireParser {
         func users(_ value: Any?) -> [SocialUser] {
             (value as? [[String: Any]] ?? []).compactMap(user)
         }
-        func requests(_ value: Any?) -> [FriendRequest] {
+        func requests(_ value: Any?, incoming: Bool) -> [FriendRequest] {
             (value as? [[String: Any]] ?? []).compactMap { raw in
                 guard let requestID = WireScalarParser.exactInt(raw["request_id"]),
                       let rawUser = raw["user"] as? [String: Any],
                       let u = user(rawUser) else { return nil }
-                return FriendRequest(requestID: requestID, user: u)
+                let isRead = incoming ? (WireScalarParser.exactBool(raw["is_read"]) ?? false) : true
+                return FriendRequest(requestID: requestID, user: u, isRead: isRead)
             }
         }
         return SocialState(
             friends: users(payload["friends"]),
-            incomingRequests: requests(payload["incoming_friend_requests"]),
-            outgoingRequests: requests(payload["outgoing_friend_requests"]),
+            incomingRequests: requests(payload["incoming_friend_requests"], incoming: true),
+            outgoingRequests: requests(payload["outgoing_friend_requests"], incoming: false),
             blockedUsers: users(payload["blocked_users"])
         )
     }

@@ -208,10 +208,6 @@ struct GameRoomView: View {
             )
             .environmentObject(model)
 
-            if !model.invitations.isEmpty {
-                Button("초대 \(model.invitations.count)개") { model.presentInvitationInbox() }
-            }
-
             Button("대기실 보기") { model.showLobbyFromGameRoom() }
                 .accessibilityFocused($lobbyViewAccessibilityFocus)
 

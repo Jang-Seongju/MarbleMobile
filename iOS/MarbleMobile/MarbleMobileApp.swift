@@ -34,14 +34,22 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, newPhase in
             model.setApplicationSceneActive(newPhase == .active)
         }
-        .sheet(isPresented: Binding(
-            get: { model.isInvitationInboxPresented },
-            set: { presented in
-                if !presented { model.dismissInvitationInbox() }
+        .sheet(item: $model.utilitySheet) { sheet in
+            Group {
+                switch sheet {
+                case .receiveNotifications:
+                    ReceiveNotificationsView()
+                case .invitations:
+                    InvitationInboxView()
+                case .privateMessages:
+                    PrivateMessagesView()
+                case .noteMailbox:
+                    NoteMailboxView()
+                case .friendManagement:
+                    FriendManagementView()
+                }
             }
-        )) {
-            InvitationInboxView()
-                .environmentObject(model)
+            .environmentObject(model)
         }
     }
 }

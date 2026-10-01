@@ -50,9 +50,11 @@ public struct SocialUser: Equatable, Sendable {
 public struct FriendRequest: Equatable, Sendable {
     public let requestID: Int
     public let user: SocialUser
-    public init(requestID: Int, user: SocialUser) {
+    public var isRead: Bool
+    public init(requestID: Int, user: SocialUser, isRead: Bool = true) {
         self.requestID = requestID
         self.user = user
+        self.isRead = isRead
     }
 }
 

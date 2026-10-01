@@ -16,6 +16,20 @@ struct SocialConfirmation: Identifiable {
     let message: String
 }
 
+struct PrivateMessageLine: Identifiable, Equatable {
+    let id = UUID()
+    let speaker: String
+    let text: String
+    let isMine: Bool
+}
+
+struct PrivateConversation: Identifiable, Equatable {
+    let userID: Int
+    var nickname: String
+    var lines: [PrivateMessageLine]
+    var id: Int { userID }
+}
+
 struct GameRoomMessage: Equatable {
     enum Kind: Equatable {
         case standard
@@ -34,6 +48,15 @@ struct GameRoomMessage: Equatable {
     }
 }
 
+enum UtilitySheet: String, Identifiable {
+    case receiveNotifications
+    case invitations
+    case privateMessages
+    case noteMailbox
+    case friendManagement
+    var id: String { rawValue }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen { case login, lobby, gameRoom }
@@ -50,7 +73,17 @@ final class AppModel: ObservableObject {
     @Published var rooms: [GameRoomSummary] = []
     @Published var socialState = SocialState()
     @Published private(set) var invitations: [GameInvitation] = []
-    @Published var isInvitationInboxPresented = false
+    @Published private(set) var privateConversations: [Int: PrivateConversation] = [:]
+    @Published private(set) var unseenPrivateMessageUserIDs: Set<Int> = []
+    @Published private(set) var notes: [NoteSnapshot] = []
+    @Published var utilitySheet: UtilitySheet?
+    @Published var activePrivateMessageUserID: Int?
+    @Published var preferredPrivateMessageUserID: Int?
+    @Published var preferredNoteUserID: Int?
+    private var notifiedNoteIDs: Set<Int> = []
+    private var notifiedFriendRequestIDs: Set<Int> = []
+    private var pendingFriendRequestReadIDs: Set<Int> = []
+    private var pendingNoteReadIDs: Set<Int> = []
     @Published private(set) var pendingInvitationID: Int?
     private var pendingInvitationType: GameInvitationType?
     @Published var alertMessage: String?
@@ -196,6 +229,7 @@ final class AppModel: ObservableObject {
             rooms = []
             socialState = .init()
             clearInvitationState()
+            clearReceiveCommunicationState()
             screen = .lobby
             output.emit(PresentationPlan(
                 root: .sfx(clip: "login.WAV", completion: .startOnly),
@@ -227,16 +261,126 @@ final class AppModel: ObservableObject {
     }
 
     func requestSocialState() { socket.send(WireMessages.socialGetState()) }
+    func requestNoteMailbox() { socket.send(WireMessages.noteMailboxGet()) }
+
+    var unreadPrivateMessageSenderCount: Int { unseenPrivateMessageUserIDs.count }
+    var unreadNoteCount: Int { notes.filter { $0.direction == .received && !$0.isRead }.count }
+    var unreadFriendRequestCount: Int { socialState.incomingRequests.filter { !$0.isRead }.count }
+
+    var hasReceiveNotifications: Bool {
+        unreadPrivateMessageSenderCount > 0 || unreadNoteCount > 0 || !invitations.isEmpty || unreadFriendRequestCount > 0
+    }
+
+    var isInvitationInboxPresented: Bool { utilitySheet == .invitations }
+    var isPrivateMessagesPresented: Bool { utilitySheet == .privateMessages }
+    var isNoteMailboxPresented: Bool { utilitySheet == .noteMailbox }
+    var isFriendManagementPresented: Bool { utilitySheet == .friendManagement }
+
+    func presentReceiveNotifications() {
+        utilitySheet = .receiveNotifications
+    }
+
+    func openPrivateMessagesFromNotifications() {
+        preferredPrivateMessageUserID = nil
+        utilitySheet = .privateMessages
+    }
+
+    func openNotesFromNotifications() {
+        preferredNoteUserID = nil
+        utilitySheet = .noteMailbox
+    }
+
+    func openInvitationsFromNotifications() {
+        presentInvitationInbox()
+    }
+
+    func openFriendRequestsFromNotifications() {
+        utilitySheet = .friendManagement
+    }
+
+    func openPrivateConversation(userID: Int, nickname: String) {
+        if privateConversations[userID] == nil {
+            privateConversations[userID] = .init(userID: userID, nickname: nickname, lines: [])
+        } else if privateConversations[userID]?.nickname != nickname {
+            privateConversations[userID]?.nickname = nickname
+        }
+        preferredPrivateMessageUserID = userID
+        unseenPrivateMessageUserIDs.remove(userID)
+        activePrivateMessageUserID = userID
+        utilitySheet = .privateMessages
+    }
+
+    func activatePrivateConversation(userID: Int) {
+        unseenPrivateMessageUserIDs.remove(userID)
+        activePrivateMessageUserID = userID
+    }
+
+    func closePrivateConversation(userID: Int) {
+        privateConversations.removeValue(forKey: userID)
+        unseenPrivateMessageUserIDs.remove(userID)
+        if activePrivateMessageUserID == userID { activePrivateMessageUserID = nil }
+    }
+
+    func sendPrivateMessage(userID: Int, nickname: String, text: String) {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        if privateConversations[userID] == nil {
+            privateConversations[userID] = .init(userID: userID, nickname: nickname, lines: [])
+        }
+        socket.send(WireMessages.privateChat(targetUserID: userID, message: message))
+    }
+
+    func openNoteMailbox(targetUser: SocialUser? = nil) {
+        preferredNoteUserID = targetUser?.userID
+        utilitySheet = .noteMailbox
+        requestNoteMailbox()
+    }
+
+    func sendNote(targetUserID: Int, body: String) {
+        let body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        socket.send(WireMessages.noteSend(targetUserID: targetUserID, body: body))
+    }
+
+    func markNoteRead(_ noteID: Int) {
+        guard let note = notes.first(where: { $0.noteID == noteID }), note.direction == .received,
+              !note.isRead, !pendingNoteReadIDs.contains(noteID) else { return }
+        pendingNoteReadIDs.insert(noteID)
+        socket.send(WireMessages.noteMarkRead(noteID: noteID))
+    }
+
+    func markFriendRequestRead(_ requestID: Int) {
+        guard let request = socialState.incomingRequests.first(where: { $0.requestID == requestID }),
+              !request.isRead, !pendingFriendRequestReadIDs.contains(requestID) else { return }
+        pendingFriendRequestReadIDs.insert(requestID)
+        socket.send(WireMessages.friendRequestMarkRead(requestID: requestID))
+    }
+
+    func acceptFriendRequest(_ requestID: Int) {
+        socket.send(WireMessages.friendRequestAccept(requestID: requestID))
+    }
+
+    func rejectFriendRequest(_ requestID: Int) {
+        socket.send(WireMessages.friendRequestReject(requestID: requestID))
+    }
+
+    func cancelFriendRequest(_ requestID: Int) {
+        socket.send(WireMessages.friendRequestCancel(requestID: requestID))
+    }
+
+    func unblockUser(_ userID: Int) {
+        socket.send(WireMessages.userUnblock(targetUserID: userID))
+    }
 
     func presentInvitationInbox() {
         guard !invitations.isEmpty else { return }
-        isInvitationInboxPresented = true
+        utilitySheet = .invitations
     }
 
     func dismissInvitationInbox() {
         // PC client(393)의 초대 창 닫기와 동일하게 서버에 거절 요청을 보내지 않고
         // 현재 로컬 목록만 폐기한다. 이미 전송한 수락 요청은 취소하지 않는다.
-        isInvitationInboxPresented = false
+        if utilitySheet == .invitations { utilitySheet = nil }
         invitations.removeAll()
     }
 
@@ -305,9 +449,9 @@ final class AppModel: ObservableObject {
             if user.id == session.identity.userID { announce("자기 자신에게는 메시지를 보낼 수 없습니다."); return }
             if user.connectionStatus == .disconnected { announce("상대방이 오프라인 상태입니다."); return }
             if user.connectionStatus == .recovering { announce("상대방이 게임 복구 중입니다."); return }
-            alertMessage = "메시지 창은 2차 UI 범위에서 구현합니다."
+            openPrivateConversation(userID: user.id, nickname: user.nickname)
         case .note:
-            alertMessage = "쪽지 작성 화면은 2차 UI 범위에서 구현합니다."
+            openNoteMailbox(targetUser: .init(userID: user.id, nickname: user.nickname))
         case .roomInvite:
             socket.send(WireMessages.invitationSend(targetUserID: user.id, inviteType: .room))
         case .spectatorInvite:
@@ -2417,6 +2561,20 @@ final class AppModel: ObservableObject {
                     category: .systemUI
                 ))
             }
+        case "chat":
+            handlePrivateChatReceived(data)
+        case "chat_sent":
+            handlePrivateChatSent(data)
+        case "chat_error":
+            handlePrivateChatError(data)
+        case "note_mailbox":
+            handleNoteMailbox(data)
+        case "note_received":
+            handleNoteReceived(data)
+        case "note_sent":
+            handleNoteSent(data)
+        case "note_marked_read":
+            handleNoteMarkedRead(data)
         case "room_chat":
             if let chat = try? RoomChatParser.parse(data) {
                 roomMessages.append(.chat("\(chat.fromNickname): \(chat.message)"))
@@ -2445,10 +2603,20 @@ final class AppModel: ObservableObject {
         case "invitation_error":
             handleInvitationError(data)
         case "social_state":
-            socialState = WireParser.socialState(from: data)
-        case "friend_request_sent", "friend_request_received", "friend_request_removed", "friendship_added", "friendship_removed", "user_blocked", "user_unblocked", "social_state_changed":
+            handleSocialState(data)
+        case "friend_request_received":
+            handleFriendRequestReceived(data)
+        case "friend_request_marked_read":
+            handleFriendRequestMarkedRead(data)
+        case "friend_request_sent", "friend_request_removed", "friendship_added", "friendship_removed", "user_blocked", "user_unblocked", "social_state_changed":
             requestSocialState()
-        case "social_error", "chat_error", "note_error":
+        case "social_error":
+            if data["request_type"] as? String == "friend_request_mark_read" {
+                pendingFriendRequestReadIDs.removeAll()
+            }
+            if let message = data["message"] as? String { alertMessage = message }
+        case "note_error":
+            if data["request_type"] as? String == "note_mark_read" { pendingNoteReadIDs.removeAll() }
             if let message = data["message"] as? String { alertMessage = message }
         case "error":
             if let message = data["message"] as? String {
@@ -2503,8 +2671,168 @@ final class AppModel: ObservableObject {
     }
 
 
+    private func handlePrivateChatReceived(_ data: [String: Any]) {
+        guard let event = ReceivePayloadParser.privateChat(data) else { return }
+        var conversation = privateConversations[event.userID]
+            ?? PrivateConversation(userID: event.userID, nickname: event.nickname, lines: [])
+        conversation.nickname = event.nickname
+        conversation.lines.append(.init(speaker: event.nickname, text: event.message, isMine: false))
+        privateConversations[event.userID] = conversation
+
+        let isActivelyViewing = isPrivateMessagesPresented && activePrivateMessageUserID == event.userID
+        if isActivelyViewing {
+            output.emit(.systemTTS("\(event.nickname). \(event.message)", preservePending: true))
+        } else {
+            unseenPrivateMessageUserIDs.insert(event.userID)
+            output.emit(PresentationPlan(
+                root: .parallel([
+                    .sfx(clip: "message.wav", completion: .startOnly),
+                    .tts("새 메시지가 도착했습니다.")
+                ]),
+                category: .systemUI,
+                queuePolicy: .enqueue,
+                interruptRetention: .preservePending
+            ))
+        }
+    }
+
+    private func handlePrivateChatSent(_ data: [String: Any]) {
+        guard let event = ReceivePayloadParser.privateChatSent(data) else { return }
+        var conversation = privateConversations[event.userID]
+            ?? PrivateConversation(userID: event.userID, nickname: event.nickname, lines: [])
+        conversation.nickname = event.nickname
+        conversation.lines.append(.init(
+            speaker: session?.identity.nickname ?? "당신",
+            text: event.message,
+            isMine: true
+        ))
+        privateConversations[event.userID] = conversation
+        if isPrivateMessagesPresented && activePrivateMessageUserID == event.userID {
+            output.emit(.systemTTS(event.message, preservePending: true))
+        }
+    }
+
+    private func handlePrivateChatError(_ data: [String: Any]) {
+        let message = (data["message"] as? String) ?? "상대방에게 메시지를 보낼 수 없습니다."
+        alertMessage = message
+        output.emit(.systemTTS(message, preservePending: true))
+    }
+
+    private func handleNoteMailbox(_ data: [String: Any]) {
+        guard let parsed = ReceivePayloadParser.notes(from: data) else { return }
+        notes = parsed
+        pendingNoteReadIDs = pendingNoteReadIDs.filter { noteID in
+            parsed.contains(where: { $0.noteID == noteID && !$0.isRead })
+        }
+        let unseen = parsed.filter {
+            $0.direction == .received && !$0.isRead && !notifiedNoteIDs.contains($0.noteID)
+        }
+        notifiedNoteIDs.formUnion(unseen.map(\.noteID))
+        if !unseen.isEmpty {
+            output.emit(.systemTTS("읽지 않은 쪽지가 \(unseen.count)개 있습니다.", preservePending: true))
+        }
+    }
+
+    private func handleNoteReceived(_ data: [String: Any]) {
+        guard let note = ReceivePayloadParser.noteEvent(data, direction: .received) else { return }
+        upsertNote(note)
+        notifiedNoteIDs.insert(note.noteID)
+        let isActive = isNoteMailboxPresented
+        let message = isActive ? "\(note.counterpart.nickname). \(note.body)" : "새 쪽지가 도착했습니다."
+        output.emit(PresentationPlan(
+            root: .parallel([
+                .sfx(clip: "memo.wav", completion: .startOnly),
+                .tts(message)
+            ]),
+            category: .systemUI,
+            queuePolicy: .enqueue,
+            interruptRetention: .preservePending
+        ))
+    }
+
+    private func handleNoteSent(_ data: [String: Any]) {
+        guard let note = ReceivePayloadParser.noteEvent(data, direction: .sent) else { return }
+        upsertNote(note)
+        output.emit(.systemTTS("\(note.counterpart.nickname)님에게 쪽지를 보냈습니다.", preservePending: true))
+    }
+
+    private func handleNoteMarkedRead(_ data: [String: Any]) {
+        guard let noteID = WireScalarParser.exactInt(data["note_id"]) else { return }
+        pendingNoteReadIDs.remove(noteID)
+        if let index = notes.firstIndex(where: { $0.noteID == noteID && $0.direction == .received }) {
+            notes[index].isRead = true
+        }
+    }
+
+    private func upsertNote(_ note: NoteSnapshot) {
+        notes.removeAll(where: { $0.noteID == note.noteID && $0.direction == note.direction })
+        notes.append(note)
+        notes.sort {
+            let lhs = $0.createdAt ?? ""
+            let rhs = $1.createdAt ?? ""
+            if lhs != rhs { return lhs > rhs }
+            return $0.noteID > $1.noteID
+        }
+    }
+
+    private func handleSocialState(_ data: [String: Any]) {
+        let parsed = WireParser.socialState(from: data)
+        let unreadIDs = Set(parsed.incomingRequests.filter { !$0.isRead }.map(\.requestID))
+        pendingFriendRequestReadIDs.formIntersection(unreadIDs)
+        let unseen = parsed.incomingRequests.filter {
+            !$0.isRead && !notifiedFriendRequestIDs.contains($0.requestID)
+        }
+        notifiedFriendRequestIDs.formUnion(unseen.map(\.requestID))
+        socialState = parsed
+        if !unseen.isEmpty {
+            output.emit(.systemTTS("새 친구 요청이 \(unseen.count)개 있습니다.", preservePending: true))
+        }
+    }
+
+    private func handleFriendRequestReceived(_ data: [String: Any]) {
+        guard let request = ReceivePayloadParser.friendRequestEvent(data) else {
+            requestSocialState()
+            return
+        }
+        socialState.incomingRequests.removeAll(where: { $0.requestID == request.requestID })
+        socialState.incomingRequests.append(request)
+        notifiedFriendRequestIDs.insert(request.requestID)
+
+        let isActive = isFriendManagementPresented
+        if isActive { markFriendRequestRead(request.requestID) }
+        let message = isActive
+            ? "\(request.user.nickname)님에게 친구 요청이 도착했습니다."
+            : "새 친구 요청이 도착했습니다."
+        output.emit(PresentationPlan(
+            root: .parallel([
+                .sfx(clip: "frendship.wav", completion: .startOnly),
+                .tts(message)
+            ]),
+            category: .systemUI,
+            queuePolicy: .enqueue,
+            interruptRetention: .preservePending
+        ))
+        requestSocialState()
+    }
+
+    private func handleFriendRequestMarkedRead(_ data: [String: Any]) {
+        guard let requestID = WireScalarParser.exactInt(data["request_id"]) else { return }
+        pendingFriendRequestReadIDs.remove(requestID)
+        if let index = socialState.incomingRequests.firstIndex(where: { $0.requestID == requestID }) {
+            socialState.incomingRequests[index].isRead = true
+        }
+    }
+
     private func handleInvitationReceived(_ data: [String: Any]) {
-        guard let invitation = try? InvitationParser.received(data) else { return }
+        let invitation: GameInvitation
+        do {
+            invitation = try InvitationParser.received(data)
+        } catch {
+            let message = "초대 정보를 처리하지 못했습니다."
+            alertMessage = message
+            output.emit(.systemTTS(message, preservePending: true))
+            return
+        }
         let inboxWasActive = isInvitationInboxPresented
 
         invitations.removeAll(where: { invitation.replaces($0) })
@@ -2552,7 +2880,7 @@ final class AppModel: ObservableObject {
                 // invite_id가 있는 invitation_error는 서버 capability 자체가 더 이상
                 // 유효하지 않다는 뜻이므로 해당 한 항목만 제거한다.
                 invitations.removeAll(where: { $0.inviteID == inviteID })
-                if invitations.isEmpty { isInvitationInboxPresented = false }
+                if invitations.isEmpty, utilitySheet == .invitations { utilitySheet = nil }
             }
             if pendingInvitationID != nil,
                inviteID == nil || inviteID == pendingInvitationID {
@@ -2577,7 +2905,7 @@ final class AppModel: ObservableObject {
 
     private func clearInvitationState() {
         invitations.removeAll()
-        isInvitationInboxPresented = false
+        if utilitySheet == .invitations { utilitySheet = nil }
         pendingInvitationID = nil
         pendingInvitationType = nil
     }
@@ -2602,6 +2930,7 @@ final class AppModel: ObservableObject {
                     screen = .lobby
                 }
                 requestSocialState()
+                requestNoteMailbox()
 
             case .activeGameRecovery:
                 recoverySnapshotApplied = false
@@ -2737,6 +3066,7 @@ final class AppModel: ObservableObject {
                 clearRoomState()
                 screen = .lobby
                 requestSocialState()
+                requestNoteMailbox()
                 return
             }
             socket.disconnect()
@@ -2790,6 +3120,8 @@ final class AppModel: ObservableObject {
         recoveryCompletedSent = false
         entryPhase = .active
         screen = .gameRoom
+        requestSocialState()
+        requestNoteMailbox()
 
         output.emit(.systemTTS("재접속했습니다.", preservePending: true))
         resumeTurnAfterRecovery(lifecycle)
@@ -3127,7 +3459,22 @@ final class AppModel: ObservableObject {
         roomJoinErrorMessage = nil
         isRoomEntryRecoveryPending = false
         clearInvitationState()
+        clearReceiveCommunicationState()
         clearRoomState()
+    }
+
+    private func clearReceiveCommunicationState() {
+        privateConversations.removeAll()
+        unseenPrivateMessageUserIDs.removeAll()
+        notes.removeAll()
+        notifiedNoteIDs.removeAll()
+        notifiedFriendRequestIDs.removeAll()
+        pendingFriendRequestReadIDs.removeAll()
+        pendingNoteReadIDs.removeAll()
+        utilitySheet = nil
+        activePrivateMessageUserID = nil
+        preferredPrivateMessageUserID = nil
+        preferredNoteUserID = nil
     }
 
     private func roomSoundClip(for event: String?) -> String? {

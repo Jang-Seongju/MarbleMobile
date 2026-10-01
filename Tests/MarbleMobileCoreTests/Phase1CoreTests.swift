@@ -2320,3 +2320,71 @@ extension Phase1CoreTests {
         XCTAssertTrue(try XCTUnwrap(spectator.first(where: { $0.kind == .spectatorInvite })).isEnabled)
     }
 }
+
+extension Phase1CoreTests {
+    func testReceiveNotificationLabelsUseNoUnitsAndFriendRequestHasNoNewPrefix() {
+        XCTAssertEqual(ReceiveNotificationKind.messages.title(count: 2), "새 메시지 2")
+        XCTAssertEqual(ReceiveNotificationKind.notes.title(count: 3), "새 쪽지 3")
+        XCTAssertEqual(ReceiveNotificationKind.invitations.title(count: 2), "초대 2")
+        XCTAssertEqual(ReceiveNotificationKind.friendRequests.title(count: 1), "친구 요청 1")
+    }
+
+    func testInvitationParserAcceptsExactServer679JSONSerializationShape() throws {
+        let json = #"{"type":"invitation_received","invite_id":41,"invite_type":"spectator","inviter":{"user_id":2,"nickname":"민수"},"room":{"room_id":7,"title":"친선전","is_private":true},"spectator_target":{"observed_user_id":5,"nickname":"경석"}}"#
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let invitation = try InvitationParser.received(payload)
+        XCTAssertEqual(invitation.inviteID, 41)
+        XCTAssertEqual(invitation.inviteType, .spectator)
+        XCTAssertEqual(invitation.room.roomID, 7)
+        XCTAssertEqual(invitation.spectatorTarget, .init(observedUserID: 5, nickname: "경석"))
+    }
+
+    func testServer679FriendRequestReadStateAndReadWireContract() throws {
+        let state = WireParser.socialState(from: [
+            "incoming_friend_requests": [
+                ["request_id": 7, "user": ["user_id": 2, "nickname": "민수"], "is_read": false],
+                ["request_id": 8, "user": ["user_id": 3, "nickname": "영희"], "is_read": true],
+            ]
+        ])
+        XCTAssertEqual(state.incomingRequests.map(\.isRead), [false, true])
+        XCTAssertEqual(
+            WireMessages.friendRequestMarkRead(requestID: 7) as NSDictionary,
+            ["type": "friend_request_mark_read", "request_id": 7] as NSDictionary
+        )
+    }
+
+    func testMessageAndNoteReceiveParsersAndWireMessagesMatchServerContracts() throws {
+        let chat = try XCTUnwrap(ReceivePayloadParser.privateChat([
+            "type": "chat", "from_id": 2, "from_nickname": "민수", "message": "안녕하세요"
+        ]))
+        XCTAssertEqual(chat.userID, 2)
+        XCTAssertEqual(chat.message, "안녕하세요")
+
+        let mailbox = try XCTUnwrap(ReceivePayloadParser.notes(from: [
+            "type": "note_mailbox",
+            "received_notes": [[
+                "note_id": 11, "user": ["user_id": 2, "nickname": "민수"],
+                "body": "받은 쪽지", "created_at": "2026-10-01T01:00:00+00:00", "is_read": false
+            ]],
+            "sent_notes": [[
+                "note_id": 12, "user": ["user_id": 2, "nickname": "민수"],
+                "body": "보낸 쪽지", "created_at": "2026-10-01T02:00:00+00:00", "is_read": true
+            ]],
+        ]))
+        XCTAssertEqual(mailbox.count, 2)
+        XCTAssertEqual(mailbox.first?.direction, .sent)
+        XCTAssertEqual(mailbox.last?.direction, .received)
+        XCTAssertFalse(try XCTUnwrap(mailbox.last).isRead)
+
+        XCTAssertEqual(
+            WireMessages.privateChat(targetUserID: 2, message: "안녕하세요") as NSDictionary,
+            ["type": "chat", "target_id": 2, "message": "안녕하세요"] as NSDictionary
+        )
+        XCTAssertEqual(WireMessages.noteMailboxGet() as NSDictionary, ["type": "note_mailbox_get"] as NSDictionary)
+        XCTAssertEqual(
+            WireMessages.noteMarkRead(noteID: 11) as NSDictionary,
+            ["type": "note_mark_read", "note_id": 11] as NSDictionary
+        )
+    }
+}
