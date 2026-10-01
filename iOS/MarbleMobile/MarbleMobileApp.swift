@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import MarbleMobileCore
 
 @main
@@ -30,9 +31,11 @@ struct RootView: View {
         }
         .onAppear {
             model.setApplicationSceneActive(scenePhase == .active)
+            updateIdleTimer(for: scenePhase)
         }
         .onChange(of: scenePhase) { _, newPhase in
             model.setApplicationSceneActive(newPhase == .active)
+            updateIdleTimer(for: newPhase)
         }
         .sheet(item: $model.utilitySheet) { sheet in
             Group {
@@ -51,5 +54,9 @@ struct RootView: View {
             }
             .environmentObject(model)
         }
+    }
+
+    private func updateIdleTimer(for phase: ScenePhase) {
+        UIApplication.shared.isIdleTimerDisabled = phase != .background
     }
 }
