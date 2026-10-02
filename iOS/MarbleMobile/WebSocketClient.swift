@@ -10,7 +10,10 @@ final class WebSocketClient: ObservableObject {
     private var receiveTask: Task<Void, Never>?
     private var generation = 0
 
-    init(config: AppConfiguration) { self.config = config }
+    init(config: AppConfiguration) {
+        self.config = config
+        MobileDiagnosticLog.shared.record("WS", "client initialized endpoint=\(config.webSocketURL.scheme ?? "?")://\(config.webSocketURL.host ?? "?")")
+    }
 
     var hasActiveConnection: Bool { task != nil }
 
@@ -18,6 +21,7 @@ final class WebSocketClient: ObservableObject {
         disconnect(notify: false)
         generation += 1
         let currentGeneration = generation
+        MobileDiagnosticLog.shared.record("WS", "connect generation=\(currentGeneration)")
 
         var components = URLComponents(url: config.webSocketURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "token", value: accessToken)]
@@ -31,6 +35,7 @@ final class WebSocketClient: ObservableObject {
     }
 
     func send(_ object: [String: Any]) {
+        MobileDiagnosticLog.shared.recordWire(direction: "SEND", object: object)
         guard let socket = task else {
             onDisconnected?("서버 연결이 종료되었습니다.")
             return
@@ -59,6 +64,7 @@ final class WebSocketClient: ObservableObject {
     /// receive 오류로 보고하지 않은 경우까지 확인한다. WebSocket ping은
     /// 서버 게임 프로토콜 메시지를 만들지 않는다.
     func probeConnection() {
+        MobileDiagnosticLog.shared.record("WS", "probe generation=\(generation) active=\(task != nil)")
         guard let socket = task else {
             onDisconnected?("서버 연결이 종료되었습니다.")
             return
@@ -78,7 +84,9 @@ final class WebSocketClient: ObservableObject {
     }
 
     func disconnect(notify: Bool = false) {
+        let oldGeneration = generation
         generation += 1
+        MobileDiagnosticLog.shared.record("WS", "disconnect generation=\(oldGeneration)->\(generation) notify=\(notify)")
         receiveTask?.cancel()
         receiveTask = nil
         task?.cancel(with: .goingAway, reason: nil)
@@ -98,6 +106,7 @@ final class WebSocketClient: ObservableObject {
                 @unknown default: continue
                 }
                 guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                MobileDiagnosticLog.shared.recordWire(direction: "RECV", object: object)
                 onMessage?(object)
             } catch {
                 guard !Task.isCancelled,
@@ -119,6 +128,7 @@ final class WebSocketClient: ObservableObject {
         message: String
     ) {
         guard generation == expectedGeneration, task === socket else { return }
+        MobileDiagnosticLog.shared.record("WS", "connection failed generation=\(expectedGeneration) message=\(message)")
         generation += 1
         receiveTask?.cancel()
         receiveTask = nil

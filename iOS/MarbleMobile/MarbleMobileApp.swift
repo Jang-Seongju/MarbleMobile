@@ -30,10 +30,12 @@ struct RootView: View {
             }
         }
         .onAppear {
+            MobileDiagnosticLog.shared.record("SCENE", "onAppear phase=\(phaseName(scenePhase))")
             model.setApplicationSceneActive(scenePhase == .active)
             updateIdleTimer(for: scenePhase)
         }
         .onChange(of: scenePhase) { _, newPhase in
+            MobileDiagnosticLog.shared.record("SCENE", "phase=\(phaseName(newPhase))")
             model.setApplicationSceneActive(newPhase == .active)
             updateIdleTimer(for: newPhase)
         }
@@ -58,5 +60,14 @@ struct RootView: View {
 
     private func updateIdleTimer(for phase: ScenePhase) {
         UIApplication.shared.isIdleTimerDisabled = phase != .background
+    }
+
+    private func phaseName(_ phase: ScenePhase) -> String {
+        switch phase {
+        case .active: return "active"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
+        }
     }
 }

@@ -41,6 +41,15 @@ struct MobileMainMenu: View {
                 model.presentReceiveNotifications()
             }
             .disabled(context == .login || model.session == nil)
+            Button("진단 로그 저장") {
+                model.saveDiagnosticLog()
+            }
+            if context == .gameRoom && model.isSpectating {
+                Button("관전 동기화") {
+                    model.synchronizeSpectatorOutput()
+                }
+                .disabled(!model.canSynchronizeSpectatorOutput)
+            }
         }
     }
 

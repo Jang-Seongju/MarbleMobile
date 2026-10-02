@@ -193,6 +193,7 @@ final class AppModel: ObservableObject {
         self.audio = audio
         self.output = IOSOutputOrchestrator(audio: audio)
         self.turnDeadlineWarning = TurnDeadlineWarningController(audio: audio)
+        MobileDiagnosticLog.shared.record("APP", "AppModel initialized")
         output.noticeSink = { [weak self] message in self?.roomMessages.append(.standard(message)) }
         socket.onMessage = { [weak self] in self?.handleSocketMessage($0) }
         socket.onDisconnected = { [weak self] message in self?.handleDisconnect(message) }
@@ -286,6 +287,33 @@ final class AppModel: ObservableObject {
 
     func presentReceiveNotifications() {
         utilitySheet = .receiveNotifications
+    }
+
+    func saveDiagnosticLog() {
+        MobileDiagnosticLog.shared.record("USER", "diagnostic log save selected")
+        do {
+            let url = try MobileDiagnosticLog.shared.saveSnapshot()
+            alertMessage = "진단 로그를 저장했습니다.\n\(url.lastPathComponent)"
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    var canSynchronizeSpectatorOutput: Bool {
+        spectatorRegistration != nil && spectatorPhase == .active && screen == .gameRoom
+    }
+
+    func synchronizeSpectatorOutput() {
+        guard canSynchronizeSpectatorOutput else { return }
+        let dropped = output.discardTransientBacklogForSpectatorSync()
+        // Dedicated deadline audio is outside IOSOutputOrchestrator, so it must cross
+        // the same catch-up boundary. Persistent scene BGM is intentionally preserved.
+        turnDeadlineWarning.stop(preserveZeroSFX: false)
+        MobileDiagnosticLog.shared.record(
+            "SPECTATOR_SYNC",
+            "completed room=\(spectatorRegistration?.roomID ?? -1) observed_user=\(spectatorRegistration?.observedUserID ?? -1) dropped=\(dropped) current_player=\(currentPlayerID.map(String.init) ?? "nil") turn_generation=\(currentTurnGeneration.map(String.init) ?? "nil")"
+        )
+        UIAccessibility.post(notification: .announcement, argument: "관전 동기화 완료")
     }
 
     func openPrivateMessagesFromNotifications() {
@@ -2494,6 +2522,10 @@ final class AppModel: ObservableObject {
 
     private func handleSocketMessage(_ data: [String: Any]) {
         guard let type = data["type"] as? String else { return }
+        MobileDiagnosticLog.shared.record(
+            "APP_RX",
+            "type=\(type) entry=\(String(describing: entryPhase)) screen=\(String(describing: screen)) spectator=\(String(describing: spectatorPhase)) game_active=\(gameIsActive) game_finished=\(gameFinished) current_player=\(currentPlayerID.map(String.init) ?? "nil") turn_generation=\(currentTurnGeneration.map(String.init) ?? "nil")"
+        )
         if type == "session_entry" {
             handleSessionEntry(data)
             return
@@ -3033,6 +3065,10 @@ final class AppModel: ObservableObject {
     private func handleSessionEntry(_ data: [String: Any]) {
         do {
             let entry = try SessionEntryParser.parse(data)
+            MobileDiagnosticLog.shared.record(
+                "RECOVERY",
+                "session_entry mode=\(entry.mode.rawValue) recovery_id=\(entry.recoveryID ?? "nil") room=\(entry.roomID.map(String.init) ?? "nil") game_session=\(entry.gameSessionID.map(String.init) ?? "nil") player=\(entry.yourPlayerID.map(String.init) ?? "nil")"
+            )
             reconnectTask?.cancel()
             reconnectTask = nil
             reconnectNeeded = false
@@ -3074,6 +3110,10 @@ final class AppModel: ObservableObject {
         let snapshot: GameRecoverySnapshot
         do {
             snapshot = try GameRecoveryParser.parse(data)
+            MobileDiagnosticLog.shared.record(
+                "RECOVERY",
+                "snapshot parsed recovery_id=\(snapshot.recoveryID) room=\(snapshot.roomID) game_session=\(snapshot.gameSessionID) player=\(snapshot.yourPlayerID) current_player=\(snapshot.gameState.currentPlayerID.map(String.init) ?? "nil") turn_generation=\(snapshot.turn.turnGeneration.map(String.init) ?? "nil")"
+            )
         } catch {
             socket.disconnect()
             returnToLogin(message: "게임 복구 정보를 적용할 수 없습니다.\n다시 로그인해 주세요.")
@@ -3162,6 +3202,7 @@ final class AppModel: ObservableObject {
         screen = .gameRoom
 
         recoverySnapshotApplied = true
+        MobileDiagnosticLog.shared.record("RECOVERY", "snapshot applied; sending game_recovery_completed recovery_id=\(snapshot.recoveryID)")
         socket.send(WireMessages.gameRecoveryCompleted(recoveryID: snapshot.recoveryID))
         recoveryCompletedSent = true
     }
@@ -3174,6 +3215,11 @@ final class AppModel: ObservableObject {
               data["recovery_id"] as? String == entry.recoveryID,
               let accepted = WireScalarParser.exactBool(data["accepted"])
         else { return }
+
+        MobileDiagnosticLog.shared.record(
+            "RECOVERY",
+            "game_recovery_completed accepted=\(accepted) recovery_id=\(entry.recoveryID) entry_mode=\(data["entry_mode"] as? String ?? "nil") reason=\(data["reason_code"] as? String ?? "nil")"
+        )
 
         if !accepted {
             if data["entry_mode"] as? String == SessionEntryMode.normalLobby.rawValue,
@@ -3471,6 +3517,10 @@ final class AppModel: ObservableObject {
     }
 
     private func handleDisconnect(_ message: String) {
+        MobileDiagnosticLog.shared.record(
+            "DISCONNECT",
+            "message=\(message) screen=\(String(describing: screen)) entry=\(String(describing: entryPhase)) spectator=\(String(describing: spectatorPhase)) reconnect_needed=\(reconnectNeeded)"
+        )
         guard screen != .login, session != nil else { return }
 
         // 초대 capability는 실시간 일시 상태다. 재접속 시 서버가 목록을 재전송하는

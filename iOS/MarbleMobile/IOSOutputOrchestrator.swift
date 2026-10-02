@@ -30,6 +30,10 @@ final class IOSOutputOrchestrator {
     }
 
     func emit(_ plan: PresentationPlan) {
+        MobileDiagnosticLog.shared.record(
+            "OUTPUT_ENQUEUE",
+            "category=\(plan.category.rawValue) policy=\(plan.queuePolicy.rawValue) pending_before=\(pending.count) detail=\(Self.describeForLog(plan))"
+        )
         if let notice = plan.persistentNotice, !notice.isEmpty {
             noticeSink?(notice)
         }
@@ -69,12 +73,31 @@ final class IOSOutputOrchestrator {
     }
 
     func stopAll() {
+        MobileDiagnosticLog.shared.record("OUTPUT", "stopAll pending=\(pending.count) executing=\(isExecuting) generation=\(generation)")
         generation += 1
         pending.removeAll()
         isExecuting = false
         executingBarrier = false
         voiceOver.cancelCurrent()
         audio.stopAll()
+    }
+
+    /// Spectator catch-up boundary. Drop only transient/pending presentation output while
+    /// preserving persistent scene BGM. Any completion from the old generation is ignored.
+    @discardableResult
+    func discardTransientBacklogForSpectatorSync() -> Int {
+        let dropped = pending.count + (isExecuting ? 1 : 0)
+        MobileDiagnosticLog.shared.record(
+            "OUTPUT_SYNC",
+            "discard transient backlog dropped=\(dropped) generation=\(generation)->\(generation + 1)"
+        )
+        generation += 1
+        pending.removeAll()
+        isExecuting = false
+        executingBarrier = false
+        voiceOver.cancelCurrent()
+        audio.stopTransient()
+        return dropped
     }
 
     func stopBGM() { audio.stopBGM() }
@@ -118,16 +141,22 @@ final class IOSOutputOrchestrator {
         let item = pending.removeFirst()
         switch item {
         case .barrier(let callback):
+            MobileDiagnosticLog.shared.record("OUTPUT_START", "barrier pending_after_pop=\(pending.count) generation=\(generation)")
             executingBarrier = true
             let token = generation
             callback { [weak self] in
                 guard let self, self.generation == token else { return }
+                MobileDiagnosticLog.shared.record("OUTPUT_DONE", "barrier generation=\(token)")
                 self.executingBarrier = false
                 self.isExecuting = false
                 self.startNextIfNeeded()
             }
 
         case .plan(let queued):
+            MobileDiagnosticLog.shared.record(
+                "OUTPUT_START",
+                "category=\(queued.plan.category.rawValue) pending_after_pop=\(pending.count) generation=\(generation) detail=\(Self.describeForLog(queued.plan))"
+            )
             let token = generation
             execute(
                 queued.plan.root,
@@ -135,6 +164,10 @@ final class IOSOutputOrchestrator {
                 gameplayAudioSuppressed: queued.gameplayAudioSuppressed
             ) { [weak self] in
                 guard let self, self.generation == token else { return }
+                MobileDiagnosticLog.shared.record(
+                    "OUTPUT_DONE",
+                    "category=\(queued.plan.category.rawValue) generation=\(token) detail=\(Self.describeForLog(queued.plan))"
+                )
                 self.isExecuting = false
                 self.startNextIfNeeded()
             }
@@ -239,4 +272,33 @@ final class IOSOutputOrchestrator {
             )
         }
     }
+
+    private static func describeForLog(_ plan: PresentationPlan) -> String {
+        let root = describeNode(plan.root)
+        guard plan.category == .gameplay,
+              let notice = plan.persistentNotice, !notice.isEmpty else { return root }
+        return "notice=\(String(notice.prefix(240))) root=\(root)"
+    }
+
+    private static func describeNode(_ node: PresentationNode) -> String {
+        switch node {
+        case .tts(let text):
+            return "tts(length=\(text.count))"
+        case .voice(let clip, let fallbackTTS):
+            return "voice(\(clip),fallback=\(fallbackTTS != nil))"
+        case .sfx(let clip, let policy):
+            return "sfx(\(clip),\(policy.rawValue))"
+        case .bgmPlay(let clip, let loop):
+            return "bgmPlay(\(clip),loop=\(loop))"
+        case .bgmStop:
+            return "bgmStop"
+        case .delay(let milliseconds):
+            return "delay(\(milliseconds)ms)"
+        case .sequence(let children):
+            return "sequence(\(children.prefix(4).map(describeNode).joined(separator: ",")))"
+        case .parallel(let children):
+            return "parallel(\(children.prefix(4).map(describeNode).joined(separator: ",")))"
+        }
+    }
+
 }
