@@ -3067,7 +3067,7 @@ final class AppModel: ObservableObject {
             let entry = try SessionEntryParser.parse(data)
             MobileDiagnosticLog.shared.record(
                 "RECOVERY",
-                "session_entry mode=\(entry.mode.rawValue) recovery_id=\(entry.recoveryID ?? "nil") room=\(entry.roomID.map(String.init) ?? "nil") game_session=\(entry.gameSessionID.map(String.init) ?? "nil") player=\(entry.yourPlayerID.map(String.init) ?? "nil")"
+                "session_entry mode=\(entry.mode.rawValue) recovery_id=\(entry.recoveryID ?? "nil") room=\(entry.roomID.map(String.init) ?? "nil") game_session=\(entry.gameSessionID ?? "nil") player=\(entry.yourPlayerID.map(String.init) ?? "nil")"
             )
             reconnectTask?.cancel()
             reconnectTask = nil
