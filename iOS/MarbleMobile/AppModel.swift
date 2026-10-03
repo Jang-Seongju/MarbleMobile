@@ -3293,22 +3293,59 @@ final class AppModel: ObservableObject {
         resumeTurnAfterRecovery(lifecycle)
 
         if let pendingInteractionData {
-            restoreRecoveredInteraction(pendingInteractionData)
+            restoreRecoveredInteraction(pendingInteractionData, lifecycle: lifecycle)
         }
+        restoreParticipantSceneAudioAfterRecovery(gameState)
         refreshHeldCardStateSilently()
     }
 
-    private func restoreRecoveredInteraction(_ data: [String: Any]) {
+    private func restoreRecoveredInteraction(
+        _ data: [String: Any],
+        lifecycle: RecoveryCompletionTurnLifecycle
+    ) {
         guard let request = try? InteractionRequestParser.parse(data) else { return }
         clearInteractionPresentationGates()
-        activeInteraction = request
-        interactionResponseSubmitted = false
+        pendingInteractionActivation = request
         turnActionStarted = true
-        if request.interactionType == "select_destination" {
-            // 서버에서 이미 진행 중인 world-travel request다. presentation
-            // activate를 다시 보내지 않고 현재 request를 활성 상태로만 복원한다.
-            activatedInteractionRequestIDs.insert(request.requestID)
+        // Restore the panel after the recovery notice and turn_ready ordering
+        // boundary, as in the PC client. Never publish a superseded request.
+        output.enqueueBarrier { [weak self] in
+            guard let self,
+                  self.entryPhase == .active,
+                  self.gameIsActive, !self.gameFinished,
+                  self.currentPlayerID == lifecycle.currentPlayerID,
+                  self.currentTurnGeneration == lifecycle.turnGeneration,
+                  self.pendingInteractionActivation?.requestID == request.requestID
+            else { return }
+            self.pendingInteractionActivation = nil
+            self.activeInteraction = request
+            self.interactionResponseSubmitted = false
+            if request.interactionType == "select_destination" {
+                // The server has already activated this recovered interaction.
+                self.activatedInteractionRequestIDs.insert(request.requestID)
+            }
         }
+    }
+
+    private func restoreParticipantSceneAudioAfterRecovery(_ gameState: GameStateSnapshot) {
+        guard let playerID = myPlayerID else { return }
+        if gameState.worldTravelSelectionPlayerID == playerID {
+            audio.playBGM("airplane.mp3", loop: true)
+            output.emit(PresentationPlan(
+                root: .sequence([
+                    .voice(clip: "select_area.wav", fallbackTTS: nil),
+                    .tts("목적지를 선택하고 두 손가락으로 두 번 탭하세요.")
+                ]),
+                category: .gameplay,
+                queuePolicy: .enqueue,
+                interruptRetention: .preservePending
+            ))
+            return
+        }
+        guard let player = gameState.players.first(where: { $0.playerID == playerID }),
+              let cell = boardCatalog?.cell(at: player.position),
+              cell.cellType == "WORLD_TRAVEL" else { return }
+        audio.playBGM("airport_world.mp3", loop: true)
     }
 
     private func resumeTurnAfterRecovery(_ lifecycle: RecoveryCompletionTurnLifecycle) {
@@ -3522,6 +3559,16 @@ final class AppModel: ObservableObject {
             "message=\(message) screen=\(String(describing: screen)) entry=\(String(describing: entryPhase)) spectator=\(String(describing: spectatorPhase)) reconnect_needed=\(reconnectNeeded)"
         )
         guard screen != .login, session != nil else { return }
+
+        // Keep the authenticated session for foreground reconnection, but end
+        // the old connection's presentation lifetime exactly as the PC client
+        // does. This cancels the in-flight audio and every old turn_ready barrier.
+        clearInteractionPresentationGates()
+        activeInteraction = nil
+        interactionResponseSubmitted = false
+        activatedInteractionRequestIDs = []
+        output.stopAll()
+        roomMessages = []
 
         // 초대 capability는 실시간 일시 상태다. 재접속 시 서버가 목록을 재전송하는
         // 계약이 없으므로 끊긴 연결의 로컬 알림 목록을 복구 대상으로 취급하지 않는다.
