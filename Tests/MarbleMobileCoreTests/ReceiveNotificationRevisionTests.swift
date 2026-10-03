@@ -38,6 +38,7 @@ final class ReceiveNotificationRevisionTests: XCTestCase {
         XCTAssertEqual(WireMessages.socialSearchUsers(query: "돌이")["query"] as? String, "돌이")
         XCTAssertEqual(WireMessages.noteRecipientSearch(query: "  나비  ")["query"] as? String, "나비")
         XCTAssertEqual(WireMessages.noteDelete(noteID: 7)["note_id"] as? Int, 7)
+        XCTAssertEqual(WireMessages.noteRecall(noteID: 7)["type"] as? String, "note_recall")
         XCTAssertEqual(WireMessages.noteDeleteConversation(targetUserID: 9)["target_user_id"] as? Int, 9)
     }
 
@@ -52,7 +53,7 @@ final class ReceiveNotificationRevisionTests: XCTestCase {
         )
         XCTAssertEqual(
             NotePresentationFormatter.noteRowText(note, selfNickname: "당신"),
-            "뭉치: 8시에 접속할게요, 2026년 10월 1일 오후 6시 42분"
+            "뭉치: 8시에 접속할게요, 2026년 10월 1일 오후 6시 42분, 읽지 않음"
         )
     }
 
@@ -67,7 +68,7 @@ final class ReceiveNotificationRevisionTests: XCTestCase {
         )
         XCTAssertEqual(
             NotePresentationFormatter.noteRowText(note, selfNickname: "나"),
-            "나: 알겠습니다, 2026년 10월 1일 오후 6시 45분"
+            "나: 알겠습니다, 2026년 10월 1일 오후 6시 45분, 읽음"
         )
     }
 }

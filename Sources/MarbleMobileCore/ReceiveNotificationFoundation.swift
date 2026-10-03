@@ -233,7 +233,8 @@ public enum NotePresentationFormatter {
 
     public static func noteRowText(_ note: NoteSnapshot, selfNickname: String) -> String {
         let sender = note.direction == .sent ? selfNickname : note.counterpart.nickname
-        return "\(sender): \(note.body), \(dateTimeText(note.createdAt))"
+        let readStatus = note.isRead ? "읽음" : "읽지 않음"
+        return "\(sender): \(note.body), \(dateTimeText(note.createdAt)), \(readStatus)"
     }
 
     private static func parseISO8601(_ value: String) -> Date? {

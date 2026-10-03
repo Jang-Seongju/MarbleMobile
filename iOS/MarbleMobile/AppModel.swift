@@ -86,6 +86,8 @@ final class AppModel: ObservableObject {
     private var notifiedFriendRequestIDs: Set<Int> = []
     private var pendingFriendRequestReadIDs: Set<Int> = []
     private var pendingNoteReadIDs: Set<Int> = []
+    private var recalledNoteIDs: Set<Int> = []
+    private var readSentNoteIDs: Set<Int> = []
     private var userPresenceLoaded = false
     private var socialStateLoaded = false
     private var friendPresenceBaselined = false
@@ -395,6 +397,11 @@ final class AppModel: ObservableObject {
 
     func deleteNote(_ noteID: Int) {
         socket.send(WireMessages.noteDelete(noteID: noteID))
+    }
+
+    func recallNote(_ noteID: Int) {
+        guard notes.contains(where: { $0.noteID == noteID && $0.direction == .sent && !$0.isRead }) else { return }
+        socket.send(WireMessages.noteRecall(noteID: noteID))
     }
 
     func deleteNoteConversation(userID: Int) {
@@ -2648,6 +2655,10 @@ final class AppModel: ObservableObject {
             handleNoteSent(data)
         case "note_marked_read":
             handleNoteMarkedRead(data)
+        case "note_read":
+            handleNoteRead(data)
+        case "note_recalled":
+            handleNoteRecalled(data)
         case "note_recipient_search_result":
             noteRecipientSearchResults = WireParser.socialUsers(from: data["users"])
         case "note_deleted":
@@ -2809,11 +2820,14 @@ final class AppModel: ObservableObject {
 
     private func handleNoteMailbox(_ data: [String: Any]) {
         guard let parsed = ReceivePayloadParser.notes(from: data) else { return }
-        notes = parsed
-        pendingNoteReadIDs = pendingNoteReadIDs.filter { noteID in
-            parsed.contains(where: { $0.noteID == noteID && !$0.isRead })
+        notes = parsed.filter { !recalledNoteIDs.contains($0.noteID) }
+        for index in notes.indices where notes[index].direction == .sent && readSentNoteIDs.contains(notes[index].noteID) {
+            notes[index].isRead = true
         }
-        let unseen = parsed.filter {
+        pendingNoteReadIDs = pendingNoteReadIDs.filter { noteID in
+            notes.contains(where: { $0.noteID == noteID && !$0.isRead })
+        }
+        let unseen = notes.filter {
             $0.direction == .received && !$0.isRead && !notifiedNoteIDs.contains($0.noteID)
         }
         notifiedNoteIDs.formUnion(unseen.map(\.noteID))
@@ -2824,6 +2838,7 @@ final class AppModel: ObservableObject {
 
     private func handleNoteReceived(_ data: [String: Any]) {
         guard let note = ReceivePayloadParser.noteEvent(data, direction: .received) else { return }
+        guard !recalledNoteIDs.contains(note.noteID) else { return }
         upsertNote(note)
         notifiedNoteIDs.insert(note.noteID)
         let isActive = isNoteMailboxPresented
@@ -2840,7 +2855,9 @@ final class AppModel: ObservableObject {
     }
 
     private func handleNoteSent(_ data: [String: Any]) {
-        guard let note = ReceivePayloadParser.noteEvent(data, direction: .sent) else { return }
+        guard var note = ReceivePayloadParser.noteEvent(data, direction: .sent) else { return }
+        guard !recalledNoteIDs.contains(note.noteID) else { return }
+        if readSentNoteIDs.contains(note.noteID) { note.isRead = true }
         upsertNote(note)
         output.emit(.systemTTS("\(note.counterpart.nickname)님에게 쪽지를 보냈습니다.", preservePending: true))
     }
@@ -2851,6 +2868,23 @@ final class AppModel: ObservableObject {
         if let index = notes.firstIndex(where: { $0.noteID == noteID && $0.direction == .received }) {
             notes[index].isRead = true
         }
+    }
+
+    private func handleNoteRead(_ data: [String: Any]) {
+        guard let noteID = WireScalarParser.exactInt(data["note_id"]) else { return }
+        readSentNoteIDs.insert(noteID)
+        if let index = notes.firstIndex(where: { $0.noteID == noteID && $0.direction == .sent }) {
+            notes[index].isRead = true
+        }
+    }
+
+    private func handleNoteRecalled(_ data: [String: Any]) {
+        guard let noteID = WireScalarParser.exactInt(data["note_id"]) else { return }
+        recalledNoteIDs.insert(noteID)
+        notes.removeAll { $0.noteID == noteID }
+        pendingNoteReadIDs.remove(noteID)
+        notifiedNoteIDs.remove(noteID)
+        output.emit(.systemTTS("쪽지 전송이 취소되었습니다.", preservePending: true))
     }
 
     private func handleNoteDeleted(_ data: [String: Any]) {
@@ -3688,6 +3722,8 @@ final class AppModel: ObservableObject {
         notifiedFriendRequestIDs.removeAll()
         pendingFriendRequestReadIDs.removeAll()
         pendingNoteReadIDs.removeAll()
+        recalledNoteIDs.removeAll()
+        readSentNoteIDs.removeAll()
         utilitySheet = nil
         activePrivateMessageUserID = nil
         preferredPrivateMessageUserID = nil

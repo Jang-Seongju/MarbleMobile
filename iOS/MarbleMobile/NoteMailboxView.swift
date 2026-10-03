@@ -12,6 +12,10 @@ private struct NoteConversationDeleteTarget: Identifiable {
     var id: Int { userID }
 }
 
+private struct NoteRecallTarget: Identifiable {
+    let id: Int
+}
+
 struct NoteMailboxView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -150,6 +154,7 @@ private struct NoteConversationView: View {
     @EnvironmentObject private var model: AppModel
     let userID: Int
     @State private var draft = ""
+    @State private var recallTarget: NoteRecallTarget?
     @AccessibilityFocusState private var focusedNoteID: Int?
 
     private var conversationNotes: [NoteSnapshot] {
@@ -189,6 +194,17 @@ private struct NoteConversationView: View {
                 .accessibilityFocused($focusedNoteID, equals: note.noteID)
                 .accessibilityActions {
                     Button("쪽지 삭제") { model.deleteNote(note.noteID) }
+                    if note.direction == .sent && !note.isRead {
+                        Button("전송 취소") { recallTarget = .init(id: note.noteID) }
+                    }
+                }
+                .swipeActions {
+                    if note.direction == .sent && !note.isRead {
+                        Button("전송 취소") { recallTarget = .init(id: note.noteID) }
+                            .tint(.orange)
+                    }
+                    Button("쪽지 삭제") { model.deleteNote(note.noteID) }
+                        .tint(.red)
                 }
             }
             .accessibilityLabel("쪽지 내역")
@@ -213,6 +229,16 @@ private struct NoteConversationView: View {
                 .padding(.bottom)
         }
         .navigationTitle(nickname)
+        .alert(item: $recallTarget) { target in
+            Alert(
+                title: Text("전송 취소"),
+                message: Text("상대방이 읽지 않은 경우 쪽지 전송을 취소하시겠습니까?"),
+                primaryButton: .destructive(Text("전송 취소")) {
+                    model.recallNote(target.id)
+                },
+                secondaryButton: .cancel(Text("취소"))
+            )
+        }
     }
 
     private func send() {

@@ -85,6 +85,10 @@ public enum WireMessages {
         ["type": "note_mark_read", "note_id": noteID]
     }
 
+    public static func noteRecall(noteID: Int) -> [String: Any] {
+        ["type": "note_recall", "note_id": noteID]
+    }
+
     public static func noteRecipientSearch(query: String) -> [String: Any] {
         ["type": "note_recipient_search", "query": query.trimmingCharacters(in: .whitespacesAndNewlines)]
     }
