@@ -15,6 +15,11 @@ struct ProfileFetchResult {
     let tokens: TokenPair
 }
 
+struct InformationFetchResult {
+    let payload: [String: Any]
+    let tokens: TokenPair
+}
+
 final class APIClient {
     private let config: AppConfiguration
     init(config: AppConfiguration) { self.config = config }
@@ -90,6 +95,43 @@ final class APIClient {
             throw APIAuthenticationLostError(message: "로그인 정보를 갱신할 수 없습니다. 다시 로그인해 주세요.")
         }
         throw profileHTTPError(status: first.response.statusCode)
+    }
+
+    func getRankings(tokens: TokenPair) async throws -> InformationFetchResult {
+        try await getInformation(path: "/rankings", label: "랭킹", tokens: tokens)
+    }
+
+    func getGameRecords(tokens: TokenPair) async throws -> InformationFetchResult {
+        try await getInformation(path: "/game-records", label: "게임 기록", tokens: tokens)
+    }
+
+    private func getInformation(path: String, label: String, tokens: TokenPair) async throws -> InformationFetchResult {
+        let first = try await protectedJSON(path: path, accessToken: tokens.accessToken)
+        if first.response.statusCode == 200 {
+            return .init(payload: try jsonObject(first.data, invalidMessage: "\(label) 정보 형식이 올바르지 않습니다."), tokens: tokens)
+        }
+        let firstCode = errorCode(from: first.data)
+        if first.response.statusCode == 401 && firstCode == "access_token_expired" {
+            let refreshed = try await refresh(refreshToken: tokens.refreshToken)
+            let second = try await protectedJSON(path: path, accessToken: refreshed.accessToken)
+            if second.response.statusCode == 200 {
+                return .init(payload: try jsonObject(second.data, invalidMessage: "\(label) 정보 형식이 올바르지 않습니다."), tokens: refreshed)
+            }
+            if isTerminalAuth(status: second.response.statusCode, code: errorCode(from: second.data)) {
+                throw APIAuthenticationLostError(message: "로그인 정보를 갱신할 수 없습니다. 다시 로그인해 주세요.")
+            }
+            throw informationHTTPError(status: second.response.statusCode, label: label)
+        }
+        if isTerminalAuth(status: first.response.statusCode, code: firstCode) {
+            throw APIAuthenticationLostError(message: "로그인 정보를 갱신할 수 없습니다. 다시 로그인해 주세요.")
+        }
+        throw informationHTTPError(status: first.response.statusCode, label: label)
+    }
+
+    private func informationHTTPError(status: Int, label: String) -> APIError {
+        if status == 403 { return APIError(message: "\(label)을 조회할 권한이 없습니다.") }
+        if status == 422 { return APIError(message: "요청값을 확인해 주세요.") }
+        return APIError(message: "서버 오류가 발생했습니다. (\(status))")
     }
 
     func refreshSession(tokens: TokenPair) async throws -> TokenPair {

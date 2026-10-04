@@ -75,19 +75,19 @@ struct MobileMainMenu: View {
             switch command {
             case .logout:
                 return model.session != nil
-            case .notes, .friends:
+            case .notes, .friends, .ranking, .gameRecords:
                 return model.entryPhase == .active
             case .roomInfo:
                 return model.entryPhase == .active
             case .myProfile:
                 return model.entryPhase == .active && model.session != nil
-            // 순위/게임 기록/미디어/수신 설정과 관전자 전환은
-            // 후속 PC 기능 이식 단계에서 이 command 자리를 그대로 활성화한다.
+            // 나머지 아직 이식되지 않은 명령은 기존 자리를 보존한다.
             default:
                 return false
             }
 
         case .gameRoom:
+            if model.isSpectatorParticipationPending { return false }
             switch command {
             case .logout:
                 return model.session != nil
@@ -97,7 +97,10 @@ struct MobileMainMenu: View {
                 return model.canRequestGameStart
             case .showLobby:
                 return model.entryPhase == .active && model.isInGameRoom
-            case .notes, .friends:
+                    && (!model.isSpectating || model.spectatorPhase == .active)
+            case .participateRoom:
+                return model.canParticipateFromSpectator
+            case .notes, .friends, .ranking, .gameRecords:
                 return model.entryPhase == .active
             // 현재 게임방에서의 방 정보/내 정보 창, 방 관리 및 나머지 부가기능은
             // 후속 이식 단계에서 연결한다.
@@ -121,6 +124,8 @@ struct MobileMainMenu: View {
             model.requestGameStart()
         case .showLobby:
             model.showLobbyFromGameRoom()
+        case .participateRoom:
+            model.requestSpectatorParticipation()
         case .roomInfo:
             guard let room = selectedLobbyRoom else {
                 model.alertMessage = "방을 선택해 주세요."
@@ -133,8 +138,12 @@ struct MobileMainMenu: View {
             model.openNoteMailbox()
         case .friends:
             model.utilitySheet = .friendManagement
-        case .ranking, .gameRecords, .exit,
-             .participateRoom, .roomManagement, .mediaManagement, .receiveSettings:
+        case .ranking:
+            model.openRankings()
+        case .gameRecords:
+            model.openGameRecords()
+        case .exit,
+             .roomManagement, .mediaManagement, .receiveSettings:
             break
         }
     }

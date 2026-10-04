@@ -87,7 +87,7 @@ public enum MainMenuDefinition {
         case .leaveRoom: return "퇴장"
         case .startGame: return "게임 시작"
         case .showLobby: return "대기실 열기"
-        case .participateRoom: return "게임방 참여"
+        case .participateRoom: return "게임방 입장"
         case .roomInfo: return "방 정보"
         case .myProfile: return "내 정보"
         case .roomManagement: return "방 관리"

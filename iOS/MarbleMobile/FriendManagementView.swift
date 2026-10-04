@@ -144,19 +144,11 @@ struct FriendManagementView: View {
                 get: { model.profileText != nil },
                 set: { if !$0 { model.profileText = nil } }
             )) {
-                NavigationStack {
-                    ScrollView {
-                        Text(model.profileText ?? "")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                    }
-                    .navigationTitle("정보")
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("닫기") { model.profileText = nil }
-                        }
-                    }
-                }
+                InformationDocumentView(
+                    title: "정보",
+                    lines: PresentationFormatter.profileLines(model.profileText ?? ""),
+                    onClose: { model.profileText = nil }
+                )
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

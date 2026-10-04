@@ -78,9 +78,10 @@ struct GameRoomView: View {
                     onLineD: { model.jumpToBoardLine("D") }
                 )
                 .layoutPriority(1)
+                .allowsHitTesting(!model.isSpectatorParticipationPending)
 
                 chatArea
-                    .allowsHitTesting(!isInteractionBoardInspectionActive)
+                    .allowsHitTesting(!isInteractionBoardInspectionActive && !model.isSpectatorParticipationPending)
                     .accessibilityHidden(isInteractionBoardInspectionActive)
             }
             .padding(.horizontal)
@@ -110,6 +111,11 @@ struct GameRoomView: View {
                 if model.isSpectating {
                     DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
                 } else if !model.hasJoinedTeam {
+                    DispatchQueue.main.async { teamNameAccessibilityFocus = true }
+                }
+            }
+            .onChange(of: model.isSpectating) { wasSpectating, isSpectating in
+                if wasSpectating && !isSpectating && model.roomEntry != nil && !model.hasJoinedTeam {
                     DispatchQueue.main.async { teamNameAccessibilityFocus = true }
                 }
             }
@@ -210,6 +216,12 @@ struct GameRoomView: View {
 
             Button("대기실 보기") { model.showLobbyFromGameRoom() }
                 .accessibilityFocused($lobbyViewAccessibilityFocus)
+                .disabled(model.isSpectating && model.spectatorPhase != .active)
+
+            if model.isSpectating {
+                Button("게임방 입장") { model.requestSpectatorParticipation() }
+                    .disabled(!model.canParticipateFromSpectator)
+            }
 
             Button("나가기", role: .destructive) {
                 showLeaveConfirmation = true

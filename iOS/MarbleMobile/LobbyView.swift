@@ -101,24 +101,11 @@ struct LobbyView: View {
                 get: { model.profileText != nil && model.utilitySheet == nil },
                 set: { if !$0 { model.profileText = nil } }
             )) {
-                NavigationStack {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(informationLines.indices, id: \.self) { index in
-                                Text(informationLines[index])
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        .padding()
-                    }
-                    .navigationTitle("정보")
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("닫기") { model.profileText = nil }
-                        }
-                    }
-                }
+                InformationDocumentView(
+                    title: "정보",
+                    lines: PresentationFormatter.profileLines(model.profileText ?? ""),
+                    onClose: { model.profileText = nil }
+                )
             }
         }
     }
@@ -127,11 +114,6 @@ struct LobbyView: View {
         let roomID = focusedRoomID ?? lastRoomID
         guard let roomID else { return nil }
         return model.rooms.first { $0.id == roomID }
-    }
-
-    private var informationLines: [String] {
-        guard let text = model.profileText else { return [] }
-        return text.split(whereSeparator: \.isNewline).map(String.init)
     }
 
     private var statusText: String {

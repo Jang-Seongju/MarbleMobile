@@ -78,8 +78,23 @@ public enum SpectatorClientPhase: String, Equatable, Sendable {
     case joinPending
     case bootstrapping
     case active
+    case participationPending
+    case participationLeftReceived
     case leavePending
     case aborting
+}
+
+public enum SpectatorParticipationValidator {
+    public static func acceptsLeft(_ data: [String: Any], expected: SpectatorRegistrationSnapshot) -> Bool {
+        guard let left = try? SpectatorParser.left(data) else { return false }
+        return left.roomID == expected.roomID && left.observedUserID == expected.observedUserID
+    }
+
+    public static func joined(_ data: [String: Any], expected: SpectatorRegistrationSnapshot) throws -> RoomEntrySnapshot {
+        let joined = try RoomEntryParser.parseJoined(data)
+        guard joined.roomID == expected.roomID else { throw RoomEntryParserError.invalidMessage }
+        return joined
+    }
 }
 
 public enum SpectatorParser {

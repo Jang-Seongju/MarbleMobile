@@ -56,6 +56,13 @@ struct RootView: View {
             }
             .environmentObject(model)
         }
+        .sheet(item: $model.informationDocument) { document in
+            InformationDocumentView(
+                title: document.title,
+                lines: document.lines,
+                onClose: { model.informationDocument = nil }
+            )
+        }
     }
 
     private func updateIdleTimer(for phase: ScenePhase) {

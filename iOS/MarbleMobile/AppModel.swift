@@ -96,6 +96,7 @@ final class AppModel: ObservableObject {
     private var pendingInvitationType: GameInvitationType?
     @Published var alertMessage: String?
     @Published var profileText: String?
+    @Published var informationDocument: InformationDocument?
     @Published var pendingSocialConfirmation: SocialConfirmation?
     @Published var isPresentingCreateRoom = false
     @Published var isRoomCreationPending = false
@@ -148,6 +149,8 @@ final class AppModel: ObservableObject {
     private var pendingSpectatorGameState: GameStateSnapshot?
     private var spectatorContextAnnounced = false
     private var spectatorSceneBootstrapPending = false
+    private var participationRegistration: SpectatorRegistrationSnapshot?
+    private var participationTimeout: Task<Void, Never>?
     private var pendingSilentHeldCardQuery = false
     private struct InteractionResultGate {
         let token: UUID
@@ -303,6 +306,47 @@ final class AppModel: ObservableObject {
 
     var canSynchronizeSpectatorOutput: Bool {
         spectatorRegistration != nil && spectatorPhase == .active && screen == .gameRoom
+    }
+
+    var canParticipateFromSpectator: Bool {
+        entryPhase == .active && screen == .gameRoom && spectatorPhase == .active
+            && spectatorRegistration != nil && socket.hasActiveConnection
+    }
+
+    var isSpectatorParticipationPending: Bool {
+        spectatorPhase == .participationPending || spectatorPhase == .participationLeftReceived
+    }
+
+    func requestSpectatorParticipation() {
+        guard canParticipateFromSpectator, let registration = spectatorRegistration else { return }
+        participationRegistration = registration
+        spectatorPhase = .participationPending
+        socket.send(WireMessages.joinRoomFromSpectator())
+        guard spectatorPhase == .participationPending else { return }
+        participationTimeout?.cancel()
+        participationTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, let self, self.isSpectatorParticipationPending
+            else { return }
+            self.abortSpectatorParticipation()
+        }
+    }
+
+    private func abortSpectatorParticipation() {
+        guard isSpectatorParticipationPending else { return }
+        participationTimeout?.cancel()
+        participationTimeout = nil
+        spectatorPhase = .aborting
+        alertMessage = "참가 전환 응답을 확인할 수 없습니다."
+        // 서버는 전환을 이미 확정했을 수 있다. 퇴장 요청 대신 연결 종료
+        // lifecycle에 맡기고, 새 연결에서 authoritative session_entry를 받는다.
+        socket.disconnect(notify: true)
+    }
+
+    private func abortUnexpectedSpectatorRoomEntry() {
+        if spectatorPhase == .aborting { return }
+        if !isSpectatorParticipationPending { spectatorPhase = .participationPending }
+        abortSpectatorParticipation()
     }
 
     func synchronizeSpectatorOutput() {
@@ -854,6 +898,15 @@ final class AppModel: ObservableObject {
     }
 
     private func handleSpectatorLeft(_ data: [String: Any]) {
+        if spectatorPhase == .participationPending || spectatorPhase == .participationLeftReceived {
+            guard let expected = participationRegistration,
+                  SpectatorParticipationValidator.acceptsLeft(data, expected: expected)
+            else { abortSpectatorParticipation(); return }
+            if spectatorPhase == .participationPending {
+                spectatorPhase = .participationLeftReceived
+            }
+            return
+        }
         guard let left = try? SpectatorParser.left(data) else { return }
 
         guard let registration = spectatorRegistration,
@@ -920,6 +973,9 @@ final class AppModel: ObservableObject {
     }
 
     private func clearSpectatorState() {
+        participationTimeout?.cancel()
+        participationTimeout = nil
+        participationRegistration = nil
         spectatorPhase = .idle
         spectatorEntryRequest = nil
         spectatorJoinExpectation = nil
@@ -2488,6 +2544,7 @@ final class AppModel: ObservableObject {
 
     func showLobbyFromGameRoom() {
         guard isInGameRoom else { return }
+        if spectatorRegistration != nil && spectatorPhase != .active { return }
         screen = .lobby
     }
 
@@ -2510,6 +2567,42 @@ final class AppModel: ObservableObject {
     func openMyProfile() {
         guard let userID = session?.identity.userID else { return }
         Task { await loadProfile(userID: userID) }
+    }
+
+    func openRankings() {
+        guard entryPhase == .active, session != nil else { return }
+        Task { await loadInformation(ranking: true) }
+    }
+
+    func openGameRecords() {
+        guard entryPhase == .active, session != nil else { return }
+        Task { await loadInformation(ranking: false) }
+    }
+
+    private func loadInformation(ranking: Bool) async {
+        guard let currentSession = session else { return }
+        do {
+            let result: InformationFetchResult
+            if ranking {
+                result = try await api.getRankings(tokens: currentSession.tokens)
+            } else {
+                result = try await api.getGameRecords(tokens: currentSession.tokens)
+            }
+            guard session?.identity.userID == currentSession.identity.userID else { return }
+            session?.tokens = result.tokens
+            informationDocument = InformationDocument(
+                title: ranking ? "전체 랭킹" : "게임 기록",
+                lines: ranking
+                    ? PresentationFormatter.rankingLines(result.payload)
+                    : PresentationFormatter.gameRecordLines(result.payload)
+            )
+        } catch let error as APIAuthenticationLostError {
+            guard session?.identity.userID == currentSession.identity.userID else { return }
+            returnToLogin(message: error.localizedDescription)
+        } catch {
+            guard session?.identity.userID == currentSession.identity.userID else { return }
+            alertMessage = error.localizedDescription
+        }
     }
 
     private func loadProfile(userID: Int) async {
@@ -2550,6 +2643,28 @@ final class AppModel: ObservableObject {
         guard entryPhase == .active else { return }
 
         if type == "room_created" || type == "room_joined" {
+            if spectatorRegistration != nil {
+                guard type == "room_joined" else {
+                    abortUnexpectedSpectatorRoomEntry()
+                    return
+                }
+                guard spectatorPhase == .participationLeftReceived,
+                      let expected = participationRegistration
+                else {
+                    abortUnexpectedSpectatorRoomEntry()
+                    return
+                }
+                do {
+                    let snapshot = try SpectatorParticipationValidator.joined(data, expected: expected)
+                    // The server sent spectator_left first. Commit the new role before
+                    // any following room_update or room_notice is dispatched.
+                    clearSpectatorState()
+                    enterGameRoom(snapshot)
+                } catch {
+                    abortSpectatorParticipation()
+                }
+                return
+            }
             do {
                 let snapshot = type == "room_created"
                     ? try RoomEntryParser.parseCreated(data)
@@ -2735,6 +2850,14 @@ final class AppModel: ObservableObject {
                     // 신뢰할 수 없는 spectator_joined 때문에 이미 연결 폐기를
                     // 확정한 상태다. 늦게 온 join 오류로 IDLE에 복귀하지 않는다.
                     alertMessage = message
+                } else if requestType == "join_room_from_spectator" && spectatorPhase == .participationPending {
+                    participationTimeout?.cancel()
+                    participationTimeout = nil
+                    participationRegistration = nil
+                    spectatorPhase = .active
+                    alertMessage = message
+                } else if requestType == "join_room_from_spectator" && spectatorPhase == .participationLeftReceived {
+                    abortSpectatorParticipation()
                 } else if requestType == "leave_spectator" && spectatorPhase == .leavePending {
                     spectatorPhase = .active
                     isLeaveRoomPending = false
@@ -3701,6 +3824,7 @@ final class AppModel: ObservableObject {
         lobbyPage = .users
         pendingSocialConfirmation = nil
         profileText = nil
+        informationDocument = nil
         isPresentingCreateRoom = false
         isRoomCreationPending = false
         roomCreationErrorMessage = nil

@@ -1,6 +1,103 @@
 import Foundation
 
+public struct InformationLine: Equatable {
+    public let text: String
+    public let isHeading: Bool
+
+    public init(_ text: String, heading: Bool = false) {
+        self.text = text
+        self.isHeading = heading
+    }
+}
+
 public enum PresentationFormatter {
+    public static func profileLines(_ text: String) -> [InformationLine] {
+        let headings: Set<String> = [
+            "[계정 정보]", "[현재 상태]", "[기본 전적]", "[승리 유형]",
+            "[누적 점수]", "[보정 평균]", "[순위 평가]"
+        ]
+        return text.split(whereSeparator: \.isNewline).map {
+            let value = String($0)
+            return InformationLine(value, heading: headings.contains(value))
+        }
+    }
+
+    public static func rankingLines(_ payload: [String: Any]) -> [InformationLine] {
+        guard let entries = payload["entries"] as? [[String: Any]],
+              let baseline = payload["baseline"] as? [String: Any]
+        else { return [.init("전체 랭킹"), .init("랭킹 정보를 표시할 수 없습니다.")] }
+        var lines = [InformationLine("전체 랭킹")]
+        if entries.isEmpty {
+            lines.append(.init("랭킹에 표시할 완료 게임 사용자가 없습니다."))
+            return lines
+        }
+        lines += [
+            .init("[랭킹 기준]"),
+            .init("랭킹 참여자 수: \(intValue(baseline["active_user_count"]))"),
+            .init("기준 게임 수: \(intValue(baseline["baseline_game_count"]))"),
+            .init("기준 평균 마블: \(marbleValue(baseline["baseline_average_marble_score"]))"),
+            .init("기준 평균 승점: \(floatValue(baseline["baseline_average_victory_score"]))"),
+            .init("[순위 목록]")
+        ]
+        for entry in entries {
+            lines += [
+                .init("\(rankValue(entry["rank"])): \(entry["nickname"] as? String ?? "")", heading: true),
+                .init("총 게임 수: \(intValue(entry["total_games"]))"),
+                .init("승리: \(intValue(entry["wins"]))"),
+                .init("패배: \(intValue(entry["losses"]))"),
+                .init("승률: \(percentValue(entry["win_rate"]))"),
+                .init("누적 마블: \(marbleValue(entry["cumulative_marble"]))"),
+                .init("누적 승점: \(victoryScoreValue(entry["victory_score"]))"),
+                .init("보정 평균 마블: \(marbleValue(entry["adjusted_average_marble"]))"),
+                .init("마블 점수: \(floatValue(entry["marble_score"]))"),
+                .init("보정 평균 승점: \(floatValue(entry["adjusted_average_victory_score"]))"),
+                .init("순위 평가 점수: \(floatValue(entry["ranking_score"]))")
+            ]
+        }
+        return lines
+    }
+
+    public static func gameRecordLines(_ payload: [String: Any]) -> [InformationLine] {
+        var lines = [InformationLine("한 게임 최다 획득 마블 기록")]
+        let groups = payload["groups"] as? [[String: Any]] ?? []
+        let typeLabels = ["triple_color": "트리플 컬러독점", "line": "라인독점", "tourist": "관광지독점"]
+        for count in [4, 3, 2] {
+            lines.append(.init("[\(count)인 게임 기록]", heading: true))
+            let group = groups.first { number($0["participant_count"])?.intValue == count }
+            let entries = group?["entries"] as? [[String: Any]] ?? []
+            if entries.isEmpty { lines.append(.init("기록 없음")); continue }
+            for (index, entry) in entries.enumerated() {
+                lines += [
+                    .init("\(number(entry["rank"])?.intValue ?? index + 1)위"),
+                    .init("닉네임: \(entry["nickname"] as? String ?? "")"),
+                    .init("획득 마블: \(marbleValue(entry["marble_delta"]))마블"),
+                    .init("승리 방식: \(entry["victory_type"] as? String == "ending_monopoly" ? "엔딩독점" : "최후의 1인")")
+                ]
+                if let types = entry["ending_monopoly_types"] as? [String], !types.isEmpty {
+                    lines.append(.init("엔딩독점 유형: " + types.map { typeLabels[$0] ?? $0 }.joined(separator: ", ")))
+                }
+                lines.append(.init("기록 일시: \(recordDateTime(entry["finished_at"]))"))
+            }
+        }
+        return lines
+    }
+
+    private static func recordDateTime(_ value: Any?) -> String {
+        guard let text = value as? String, !text.isEmpty else { return "알 수 없음" }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var parsed = parser.date(from: text)
+        if parsed == nil {
+            parser.formatOptions = [.withInternetDateTime]
+            parsed = parser.date(from: text)
+        }
+        guard let date = parsed else { return text }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.dateFormat = "yyyy년 M월 d일 a h시 mm분"
+        return formatter.string(from: date)
+    }
+
     public static func roomInfoText(_ room: GameRoomSummary, participantNames: [String]? = nil) -> String {
         let statusLabel: String
         switch room.status {

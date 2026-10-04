@@ -39,6 +39,10 @@ public enum WireMessages {
         ["type": "leave_spectator"]
     }
 
+    public static func joinRoomFromSpectator() -> [String: Any] {
+        ["type": "join_room_from_spectator"]
+    }
+
     public static func joinRoom(roomID: Int, password: String? = nil) -> [String: Any] {
         var message: [String: Any] = [
             "type": "join_room",
