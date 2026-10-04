@@ -309,8 +309,15 @@ final class AppModel: ObservableObject {
     }
 
     var canParticipateFromSpectator: Bool {
-        entryPhase == .active && screen == .gameRoom && spectatorPhase == .active
-            && spectatorRegistration != nil && socket.hasActiveConnection
+        guard entryPhase == .active, screen == .gameRoom, spectatorPhase == .active,
+              let registration = spectatorRegistration, socket.hasActiveConnection,
+              !gameIsActive else { return false }
+        // A newly joined spectator may reach ACTIVE before game_state arrives.
+        // Require an explicit waiting room_list state; the server still has final authority.
+        return SpectatorParticipationAvailability.canRequest(
+            gameIsActive: gameIsActive,
+            roomStatus: rooms.first(where: { $0.id == registration.roomID })?.status
+        )
     }
 
     var isSpectatorParticipationPending: Bool {
@@ -1826,6 +1833,8 @@ final class AppModel: ObservableObject {
         if isSpectating {
             // game_started는 관전 대상 presentation stream에도 전달된다. 관전자는
             // payload의 your_player_id를 조작 권한(myPlayerID)으로 저장하지 않는다.
+            gameIsActive = true
+            gameFinished = false
             gameRotor.reset()
             resetPrivateTurnPreparationState()
             clearInteractionPresentationGates()

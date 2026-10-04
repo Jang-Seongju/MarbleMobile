@@ -219,7 +219,7 @@ struct GameRoomView: View {
                 .disabled(model.isSpectating && model.spectatorPhase != .active)
 
             if model.isSpectating {
-                Button("게임방 입장") { model.requestSpectatorParticipation() }
+                Button("게임방 참여") { model.requestSpectatorParticipation() }
                     .disabled(!model.canParticipateFromSpectator)
             }
 

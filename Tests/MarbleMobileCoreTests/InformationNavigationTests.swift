@@ -4,7 +4,7 @@ import XCTest
 
 final class InformationNavigationTests: XCTestCase {
     func testSpectatorParticipationUsesOnlyServerCommandType() {
-        XCTAssertEqual(MainMenuDefinition.title(for: .participateRoom), "게임방 입장")
+        XCTAssertEqual(MainMenuDefinition.title(for: .participateRoom), "게임방 참여")
         XCTAssertEqual(
             WireMessages.joinRoomFromSpectator() as NSDictionary,
             ["type": "join_room_from_spectator"] as NSDictionary
@@ -27,6 +27,13 @@ final class InformationNavigationTests: XCTestCase {
         var wrongRoom = joined
         wrongRoom["room_id"] = 8
         XCTAssertThrowsError(try SpectatorParticipationValidator.joined(wrongRoom, expected: expected))
+    }
+
+    func testSpectatorParticipationIsUnavailableDuringGameAndUntilRoomReturnsToWaiting() {
+        XCTAssertFalse(SpectatorParticipationAvailability.canRequest(gameIsActive: true, roomStatus: "waiting"))
+        XCTAssertFalse(SpectatorParticipationAvailability.canRequest(gameIsActive: false, roomStatus: "playing"))
+        XCTAssertFalse(SpectatorParticipationAvailability.canRequest(gameIsActive: false, roomStatus: nil))
+        XCTAssertTrue(SpectatorParticipationAvailability.canRequest(gameIsActive: false, roomStatus: "waiting"))
     }
 
     func testProfileHeadingsApplyToBothSelfAndOtherProfiles() {

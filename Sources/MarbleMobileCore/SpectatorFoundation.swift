@@ -97,6 +97,12 @@ public enum SpectatorParticipationValidator {
     }
 }
 
+public enum SpectatorParticipationAvailability {
+    public static func canRequest(gameIsActive: Bool, roomStatus: String?) -> Bool {
+        !gameIsActive && roomStatus == "waiting"
+    }
+}
+
 public enum SpectatorParser {
     public static func targetList(_ data: [String: Any]) throws -> SpectatorTargetList {
         guard data["type"] as? String == "spectator_target_list",
