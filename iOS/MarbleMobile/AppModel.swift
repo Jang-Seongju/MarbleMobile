@@ -112,6 +112,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var spectatorRegistration: SpectatorRegistrationSnapshot?
     @Published var roomEntry: RoomEntrySnapshot?
     @Published var roomUpdate: RoomUpdateSnapshot?
+    @Published var isPresentingRoomManagement = false
+    @Published private(set) var isRoomManagementUpdatePending = false
+    @Published private(set) var pendingRoomKickUserIDs: Set<Int> = []
+    @Published private(set) var queuedRoomKickUserIDs: Set<Int> = []
     @Published var roomMessages: [GameRoomMessage] = []
     @Published var boardCatalog: BoardCatalogSnapshot?
     @Published var staticInformationCatalog: StaticInformationCatalogSnapshot?
@@ -309,7 +313,7 @@ final class AppModel: ObservableObject {
     }
 
     var canParticipateFromSpectator: Bool {
-        guard entryPhase == .active, screen == .gameRoom, spectatorPhase == .active,
+        guard entryPhase == .active, (screen == .gameRoom || screen == .lobby), spectatorPhase == .active,
               let registration = spectatorRegistration, socket.hasActiveConnection,
               !gameIsActive else { return false }
         // A newly joined spectator may reach ACTIVE before game_state arrives.
@@ -1008,6 +1012,58 @@ final class AppModel: ObservableObject {
     var isSpectating: Bool { spectatorRegistration != nil }
 
     var isInGameRoom: Bool { roomEntry != nil || spectatorRegistration != nil }
+
+    var canManageRoom: Bool {
+        entryPhase == .active
+            && screen == .gameRoom
+            && roomEntry != nil
+            && !isSpectating
+            && !isLeaveRoomPending
+            && !isGameStartPending
+            && aiSelectionRequest == nil
+            && !isRoomManagementUpdatePending
+            && roomUpdate?.roomID == roomEntry?.roomID
+            && roomUpdate?.participants != nil
+            && roomUpdate?.hostUserID == session?.identity.userID
+    }
+
+    func openRoomManagement() {
+        guard canManageRoom else { return }
+        isPresentingRoomManagement = true
+    }
+
+    func updateRoomManagement(_ request: RoomManagementRequest) {
+        guard canManageRoom else { return }
+        isRoomManagementUpdatePending = true
+        isPresentingRoomManagement = false
+        socket.send(WireMessages.roomManagementUpdate(request))
+    }
+
+    func kickRoomParticipant(userID: Int) {
+        guard canManageRoom, let update = roomUpdate,
+              update.participants?.contains(where: { $0.userID == userID }) == true,
+              userID != session?.identity.userID,
+              !pendingRoomKickUserIDs.contains(userID),
+              !queuedRoomKickUserIDs.contains(userID) else { return }
+        pendingRoomKickUserIDs.insert(userID)
+        socket.send(WireMessages.roomKick(targetUserID: userID))
+    }
+
+    func openCurrentRoomInfo() {
+        guard entryPhase == .active, let roomID = currentRoomID,
+              let update = roomUpdate, update.roomID == roomID else { return }
+        let participantNames = update.participants?.map(\.nickname)
+            ?? update.teams.flatMap(\.members).map(\.nickname)
+        let room = GameRoomSummary(
+            id: roomID, title: update.title, current: update.participants?.count ?? participantNames.count,
+            maxPlayers: update.maxPlayers, isPrivate: update.isPrivate,
+            status: gameIsActive ? "playing" : "waiting"
+        )
+        let text = PresentationFormatter.roomInfoText(room, participantNames: participantNames)
+        informationDocument = InformationDocument(
+            title: "방 정보", lines: text.components(separatedBy: "\n").map { InformationLine($0) }
+        )
+    }
 
     var canShowGameRoom: Bool {
         roomEntry != nil || (spectatorRegistration != nil && spectatorPhase == .active)
@@ -2621,7 +2677,12 @@ final class AppModel: ObservableObject {
             if session?.identity.userID == currentSession.identity.userID {
                 session?.tokens = result.tokens
             }
-            profileText = PresentationFormatter.userProfileText(result.profile)
+            let text = PresentationFormatter.userProfileText(result.profile)
+            if screen == .gameRoom {
+                informationDocument = InformationDocument(title: "정보", lines: PresentationFormatter.profileLines(text))
+            } else {
+                profileText = text
+            }
         } catch let error as APIAuthenticationLostError {
             returnToLogin(message: error.localizedDescription)
         } catch {
@@ -2740,6 +2801,19 @@ final class AppModel: ObservableObject {
             handleBoardCells(data)
         case "room_update":
             handleRoomUpdate(data)
+        case "room_kick_queued":
+            if let roomID = WireScalarParser.exactInt(data["room_id"]), roomID == roomEntry?.roomID,
+               let userID = WireScalarParser.exactInt(data["target_user_id"]),
+               pendingRoomKickUserIDs.contains(userID) {
+                pendingRoomKickUserIDs.remove(userID)
+                queuedRoomKickUserIDs.insert(userID)
+            }
+        case "room_kicked":
+            if let roomID = WireScalarParser.exactInt(data["room_id"]), roomID == roomEntry?.roomID {
+                clearRoomState()
+                screen = .lobby
+                alertMessage = "방장이 퇴장 처리했습니다."
+            }
         case "room_event":
             if let message = RoomEventFormatter.message(from: data) {
                 roomMessages.append(.standard(message))
@@ -2845,7 +2919,13 @@ final class AppModel: ObservableObject {
         case "error":
             if let message = data["message"] as? String {
                 let requestType = data["request_type"] as? String
-                if requestType == "invitation_accept" && pendingInvitationID != nil {
+                if requestType == "room_management_update" {
+                    isRoomManagementUpdatePending = false
+                    alertMessage = message
+                } else if requestType == "room_kick" {
+                    pendingRoomKickUserIDs.removeAll()
+                    alertMessage = message
+                } else if requestType == "invitation_accept" && pendingInvitationID != nil {
                     finishInvitationAcceptanceForRetry(message: message)
                 } else if requestType == "get_spectator_targets" && spectatorPhase == .targetListPending {
                     resetPendingSpectatorEntry()
@@ -3636,6 +3716,13 @@ final class AppModel: ObservableObject {
             guard snapshot.roomID == currentRoomID else { return }
             let wasJoined = hasJoinedTeam
             roomUpdate = snapshot
+            isRoomManagementUpdatePending = false
+            let currentUserIDs = Set(snapshot.participants?.map(\.userID) ?? [])
+            pendingRoomKickUserIDs.formIntersection(currentUserIDs)
+            queuedRoomKickUserIDs.formIntersection(currentUserIDs)
+            if snapshot.hostUserID != session?.identity.userID {
+                isPresentingRoomManagement = false
+            }
             if !wasJoined, hasJoinedTeam {
                 isTeamCreationPending = false
                 if let actualTeamName = currentTeamName {
@@ -3700,6 +3787,10 @@ final class AppModel: ObservableObject {
 
     private func clearRoomPresentationState() {
         output.stopAll()
+        isPresentingRoomManagement = false
+        isRoomManagementUpdatePending = false
+        pendingRoomKickUserIDs.removeAll()
+        queuedRoomKickUserIDs.removeAll()
         roomEntry = nil
         roomUpdate = nil
         roomMessages = []
@@ -3725,6 +3816,11 @@ final class AppModel: ObservableObject {
             "message=\(message) screen=\(String(describing: screen)) entry=\(String(describing: entryPhase)) spectator=\(String(describing: spectatorPhase)) reconnect_needed=\(reconnectNeeded)"
         )
         guard screen != .login, session != nil else { return }
+
+        isPresentingRoomManagement = false
+        isRoomManagementUpdatePending = false
+        pendingRoomKickUserIDs.removeAll()
+        queuedRoomKickUserIDs.removeAll()
 
         // Keep the authenticated session for foreground reconnection, but end
         // the old connection's presentation lifetime exactly as the PC client

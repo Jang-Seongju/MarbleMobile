@@ -123,6 +123,10 @@ struct GameRoomView: View {
                 AIPlayerSelectionSheet(request: request)
                     .environmentObject(model)
             }
+            .sheet(isPresented: $model.isPresentingRoomManagement) {
+                RoomManagementView()
+                    .environmentObject(model)
+            }
             .sheet(item: interactionSheetBinding, onDismiss: interactionSheetDidDismiss) { request in
                 GameInteractionSheet(
                     request: request,
@@ -203,7 +207,9 @@ struct GameRoomView: View {
             return "\(registration.roomID): \(title) - \(registration.observedUserNickname)의 관중석"
         }
         guard let room = model.roomEntry else { return "게임방" }
-        return "\(room.roomID): \(room.title)"
+        let currentTitle = model.roomUpdate?.roomID == room.roomID
+            ? model.roomUpdate?.title ?? room.title : room.title
+        return "\(room.roomID): \(currentTitle)"
     }
 
     private var topControls: some View {

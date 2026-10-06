@@ -78,9 +78,11 @@ struct MobileMainMenu: View {
             case .notes, .friends, .ranking, .gameRecords:
                 return model.entryPhase == .active
             case .roomInfo:
-                return model.entryPhase == .active
+                return model.entryPhase == .active && selectedLobbyRoom != nil
             case .myProfile:
                 return model.entryPhase == .active && model.session != nil
+            case .participateRoom:
+                return model.canParticipateFromSpectator
             // 나머지 아직 이식되지 않은 명령은 기존 자리를 보존한다.
             default:
                 return false
@@ -102,8 +104,12 @@ struct MobileMainMenu: View {
                 return model.canParticipateFromSpectator
             case .notes, .friends, .ranking, .gameRecords:
                 return model.entryPhase == .active
-            // 현재 게임방에서의 방 정보/내 정보 창, 방 관리 및 나머지 부가기능은
-            // 후속 이식 단계에서 연결한다.
+            case .roomInfo:
+                return model.entryPhase == .active && model.roomUpdate?.roomID == model.currentRoomID
+            case .myProfile:
+                return model.entryPhase == .active && model.session != nil
+            case .roomManagement:
+                return model.canManageRoom
             default:
                 return false
             }
@@ -127,6 +133,10 @@ struct MobileMainMenu: View {
         case .participateRoom:
             model.requestSpectatorParticipation()
         case .roomInfo:
+            if context == .gameRoom {
+                model.openCurrentRoomInfo()
+                return
+            }
             guard let room = selectedLobbyRoom else {
                 model.alertMessage = "방을 선택해 주세요."
                 return
@@ -134,6 +144,8 @@ struct MobileMainMenu: View {
             model.performRoomAction(.roomInfo, room: room)
         case .myProfile:
             model.openMyProfile()
+        case .roomManagement:
+            model.openRoomManagement()
         case .notes:
             model.openNoteMailbox()
         case .friends:
@@ -143,7 +155,7 @@ struct MobileMainMenu: View {
         case .gameRecords:
             model.openGameRecords()
         case .exit,
-             .roomManagement, .mediaManagement, .receiveSettings:
+             .mediaManagement, .receiveSettings:
             break
         }
     }

@@ -32,6 +32,8 @@ public struct RoomUpdateSnapshot: Equatable, Sendable {
     public let hostUserID: Int
     public let gameStartAuthorityUserID: Int
     public let teams: [RoomTeam]
+    /// Server-authoritative room membership in join order; nil for older payloads.
+    public let participants: [RoomTeamMember]?
 
     public init(
         roomID: Int,
@@ -40,7 +42,8 @@ public struct RoomUpdateSnapshot: Equatable, Sendable {
         isPrivate: Bool,
         hostUserID: Int,
         gameStartAuthorityUserID: Int,
-        teams: [RoomTeam]
+        teams: [RoomTeam],
+        participants: [RoomTeamMember]? = nil
     ) {
         self.roomID = roomID
         self.title = title
@@ -49,6 +52,7 @@ public struct RoomUpdateSnapshot: Equatable, Sendable {
         self.hostUserID = hostUserID
         self.gameStartAuthorityUserID = gameStartAuthorityUserID
         self.teams = teams
+        self.participants = participants
     }
 
     public func team(containing userID: Int) -> RoomTeam? {
@@ -132,6 +136,28 @@ public enum RoomUpdateParser {
             teams.append(.init(id: teamID, name: teamName, members: members))
         }
 
+        let participants: [RoomTeamMember]?
+        if let rawParticipants = data["participants"] {
+            guard let entries = rawParticipants as? [[String: Any]] else {
+                throw RoomUpdateParserError.invalidMessage
+            }
+            var seen = Set<Int>()
+            var parsed: [RoomTeamMember] = []
+            for entry in entries {
+                guard let userID = exactPositiveInt(entry["user_id"]), seen.insert(userID).inserted,
+                      let nickname = entry["nickname"] as? String,
+                      nickname == nickname.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !nickname.isEmpty,
+                      let rawStatus = entry["connection_status"] as? String,
+                      let status = ConnectionStatus(rawValue: rawStatus)
+                else { throw RoomUpdateParserError.invalidMessage }
+                parsed.append(.init(userID: userID, nickname: nickname, connectionStatus: status))
+            }
+            participants = parsed
+        } else {
+            participants = nil
+        }
+
         return RoomUpdateSnapshot(
             roomID: roomID,
             title: rawTitle,
@@ -139,7 +165,8 @@ public enum RoomUpdateParser {
             isPrivate: isPrivate,
             hostUserID: hostUserID,
             gameStartAuthorityUserID: authorityUserID,
-            teams: teams
+            teams: teams,
+            participants: participants
         )
     }
 

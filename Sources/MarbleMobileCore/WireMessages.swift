@@ -14,6 +14,20 @@ public enum WireMessages {
         ["type": "leave_room"]
     }
 
+    public static func roomManagementUpdate(_ request: RoomManagementRequest) -> [String: Any] {
+        [
+            "type": "room_management_update",
+            "title": request.title,
+            "max_players": request.maxPlayers,
+            "is_private": request.isPrivate,
+            "password": request.password.map { $0 as Any } ?? NSNull(),
+        ]
+    }
+
+    public static func roomKick(targetUserID: Int) -> [String: Any] {
+        ["type": "room_kick", "target_user_id": targetUserID]
+    }
+
     public static func getSpectatorTargets(roomID: Int) -> [String: Any] {
         ["type": "get_spectator_targets", "room_id": roomID]
     }
