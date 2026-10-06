@@ -163,6 +163,9 @@ struct LobbyView: View {
         .onChange(of: focusedUserID) { _, value in
             if let value { lastUserID = value }
         }
+        .accessibilityAction(.default) {
+            model.performUserAction(.message, user: user)
+        }
         .accessibilityActions {
             lobbyAccessibilityActions(
                 actions,

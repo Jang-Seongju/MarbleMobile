@@ -2,7 +2,6 @@ import SwiftUI
 
 struct PrivateMessagesView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
     @State private var path: [Int] = []
 
     private var conversations: [PrivateConversation] {
@@ -33,7 +32,7 @@ struct PrivateMessagesView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("닫기") { dismiss() }
+                    Button("닫기") { model.utilitySheet = nil }
                 }
             }
             .onAppear {
@@ -48,34 +47,34 @@ struct PrivateMessagesView: View {
 
 private struct PrivateConversationView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
     let userID: Int
     @State private var draft = ""
 
     private var conversation: PrivateConversation? { model.privateConversations[userID] }
 
     var body: some View {
-        VStack {
-            List(conversation?.lines ?? []) { line in
-                Text("\(line.speaker): \(line.text)")
-            }
-            .accessibilityLabel("대화 내용")
-
-            TextField("메시지 입력", text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(send)
-                .padding(.horizontal)
-
+        List(conversation?.lines ?? []) { line in
+            Text("\(line.speaker): \(line.text)")
+        }
+        .accessibilityLabel("대화 내용")
+        .safeAreaInset(edge: .bottom) {
             HStack {
+                TextField("메시지 입력", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.send)
+                    .onSubmit(send)
                 Button("보내기", action: send)
-                Button("대화 닫기") {
-                    model.closePrivateConversation(userID: userID)
-                    dismiss()
-                }
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding()
         }
         .navigationTitle("\(conversation?.nickname ?? "사용자")님과의 대화")
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("뒤로") { model.utilitySheet = nil }
+            }
+        }
         .onAppear {
             if conversation != nil {
                 model.activatePrivateConversation(userID: userID)
@@ -88,7 +87,8 @@ private struct PrivateConversationView: View {
 
     private func send() {
         guard let conversation else { return }
-        let text = draft
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         draft = ""
         model.sendPrivateMessage(userID: userID, nickname: conversation.nickname, text: text)
     }
