@@ -1815,7 +1815,7 @@ extension Phase1CoreTests {
             [
                 [.login, .logout],
                 [.notes, .friends, .ranking, .gameRecords],
-                [.exit, .leaveRoom],
+                [.leaveRoom],
             ]
         )
         XCTAssertEqual(
@@ -1833,7 +1833,7 @@ extension Phase1CoreTests {
             [
                 "로그인", "로그아웃",
                 "쪽지함", "친구 관리", "순위 보기", "게임 기록",
-                "종료", "퇴장",
+                "퇴장",
                 "게임 시작", "대기실 열기", "게임방 참여", "방 정보", "내 정보", "방 관리",
                 "미디어 관리", "수신 설정",
             ]

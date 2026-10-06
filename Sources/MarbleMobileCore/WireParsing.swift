@@ -91,7 +91,8 @@ public enum WireParser {
             friends: users(payload["friends"]),
             incomingRequests: requests(payload["incoming_friend_requests"], incoming: true),
             outgoingRequests: requests(payload["outgoing_friend_requests"], incoming: false),
-            blockedUsers: users(payload["blocked_users"])
+            blockedUsers: users(payload["blocked_users"]),
+            receiveSettings: ReceiveSettings().merging(payload["preferences"] as? [String: Any] ?? [:])
         )
     }
 }

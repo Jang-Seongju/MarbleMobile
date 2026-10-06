@@ -49,6 +49,8 @@ struct GameRoomMessage: Equatable {
 }
 
 enum UtilitySheet: String, Identifiable {
+    case mediaManagement
+    case receiveSettings
     case receiveNotifications
     case invitations
     case privateMessages
@@ -77,6 +79,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var unseenPrivateMessageUserIDs: Set<Int> = []
     @Published private(set) var notes: [NoteSnapshot] = []
     @Published var utilitySheet: UtilitySheet?
+    @Published var mediaSettings = MediaSettings.load()
+    @Published private(set) var isReceiveSettingsPending = false
     @Published var activePrivateMessageUserID: Int?
     @Published var preferredPrivateMessageUserID: Int?
     @Published var preferredNoteUserID: Int?
@@ -277,6 +281,27 @@ final class AppModel: ObservableObject {
     }
 
     func requestSocialState() { socket.send(WireMessages.socialGetState()) }
+    var canOpenReceiveSettings: Bool {
+        entryPhase == .active && session != nil && socialStateLoaded
+            && !isReceiveSettingsPending && socket.hasActiveConnection
+    }
+
+    func setMediaSettings(_ settings: MediaSettings) {
+        audio.applySettings(settings)
+        mediaSettings = audio.settings
+    }
+
+    func openReceiveSettings() {
+        guard canOpenReceiveSettings else { return }
+        utilitySheet = .receiveSettings
+    }
+
+    func saveReceiveSettings(_ settings: ReceiveSettings) {
+        guard canOpenReceiveSettings, utilitySheet == .receiveSettings else { return }
+        utilitySheet = nil
+        isReceiveSettingsPending = true
+        socket.send(WireMessages.socialPreferencesUpdate(settings))
+    }
     func requestNoteMailbox() { socket.send(WireMessages.noteMailboxGet()) }
 
     var unreadPrivateMessageSenderCount: Int { unseenPrivateMessageUserIDs.count }
@@ -2897,6 +2922,9 @@ final class AppModel: ObservableObject {
             handleInvitationError(data)
         case "social_state":
             handleSocialState(data)
+        case "social_preferences", "social_preferences_updated":
+            socialState.receiveSettings = socialState.receiveSettings.merging(data)
+            if type == "social_preferences_updated" { isReceiveSettingsPending = false }
         case "social_search_result":
             handleSocialSearchResult(data)
         case "friend_request_received":
@@ -2909,6 +2937,9 @@ final class AppModel: ObservableObject {
                 socket.send(WireMessages.socialSearchUsers(query: socialState.searchQuery))
             }
         case "social_error":
+            if data["request_type"] as? String == "social_preferences_update" {
+                isReceiveSettingsPending = false
+            }
             if data["request_type"] as? String == "friend_request_mark_read" {
                 pendingFriendRequestReadIDs.removeAll()
             }
@@ -3135,6 +3166,7 @@ final class AppModel: ObservableObject {
 
     private func handleSocialState(_ data: [String: Any]) {
         var parsed = WireParser.socialState(from: data)
+        parsed.receiveSettings = socialState.receiveSettings.merging(data["preferences"] as? [String: Any] ?? [:])
         parsed.searchQuery = socialState.searchQuery
         parsed.searchResults = socialState.searchResults
         parsed.mergePresence(users)
@@ -3817,6 +3849,9 @@ final class AppModel: ObservableObject {
         )
         guard screen != .login, session != nil else { return }
 
+        isReceiveSettingsPending = false
+        if utilitySheet == .receiveSettings { utilitySheet = nil }
+
         isPresentingRoomManagement = false
         isRoomManagementUpdatePending = false
         pendingRoomKickUserIDs.removeAll()
@@ -3924,6 +3959,7 @@ final class AppModel: ObservableObject {
         users = []
         rooms = []
         socialState = .init()
+        isReceiveSettingsPending = false
         recoveryEntry = nil
         entryPhase = .inactive
         lobbyPage = .users

@@ -87,6 +87,16 @@ public enum WireMessages {
         ["type": "social_get_state"]
     }
 
+    public static func socialPreferencesUpdate(_ settings: ReceiveSettings) -> [String: Any] {
+        [
+            "type": "social_preferences_update",
+            "message_policy": settings.message.rawValue,
+            "note_policy": settings.note.rawValue,
+            "invitation_policy": settings.invitation.rawValue,
+            "friend_request_policy": settings.friendRequest.rawValue,
+        ]
+    }
+
     public static func privateChat(targetUserID: Int, message: String) -> [String: Any] {
         ["type": "chat", "target_id": targetUserID, "message": message]
     }

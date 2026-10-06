@@ -194,13 +194,19 @@ final class IOSOutputOrchestrator {
             var started = false
             started = audio.playVoice(clip) { [weak self] success in
                 guard let self, self.generation == token else { return }
-                if success || fallbackTTS == nil {
+                if success || fallbackTTS == nil || !self.audio.settings.sfxEnabled {
                     completion()
                 } else if let fallbackTTS {
                     self.voiceOver.speak(fallbackTTS, completion: completion)
                 }
             }
-            if !started, fallbackTTS == nil { completion() }
+            if !started {
+                if let fallbackTTS, audio.settings.sfxEnabled {
+                    voiceOver.speak(fallbackTTS, completion: completion)
+                } else {
+                    completion()
+                }
+            }
 
         case .sfx(let clip, let policy):
             if gameplayAudioSuppressed { completion(); return }

@@ -42,6 +42,10 @@ struct RootView: View {
         .sheet(item: $model.utilitySheet) { sheet in
             Group {
                 switch sheet {
+                case .mediaManagement:
+                    MediaManagementView()
+                case .receiveSettings:
+                    ReceiveSettingsView()
                 case .receiveNotifications:
                     ReceiveNotificationsView()
                 case .invitations:

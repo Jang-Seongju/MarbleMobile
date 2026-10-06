@@ -7,7 +7,6 @@ public enum MainMenuCommand: String, Identifiable, Sendable {
     case friends
     case ranking
     case gameRecords
-    case exit
     case leaveRoom
 
     case startGame
@@ -45,8 +44,8 @@ public struct MainMenuSectionDefinition: Identifiable, Equatable, Sendable {
     }
 }
 
-/// client(393) app/ui/main_menu.py의 구조/순서/표시명을 모바일 공통 메뉴의
-/// 단일 원천으로 옮긴다. PC 전용 핫키/단축키 표시는 의도적으로 포함하지 않는다.
+/// PC 공통 메뉴의 구조/순서/표시명을 모바일 메뉴의 단일 원천으로 옮긴다.
+/// PC 전용 종료 명령과 핫키/단축키 표시는 포함하지 않는다.
 public enum MainMenuDefinition {
     public static let sections: [MainMenuSectionDefinition] = [
         .init(
@@ -55,7 +54,7 @@ public enum MainMenuDefinition {
             groups: [
                 [.login, .logout],
                 [.notes, .friends, .ranking, .gameRecords],
-                [.exit, .leaveRoom],
+                [.leaveRoom],
             ]
         ),
         .init(
@@ -83,7 +82,6 @@ public enum MainMenuDefinition {
         case .friends: return "친구 관리"
         case .ranking: return "순위 보기"
         case .gameRecords: return "게임 기록"
-        case .exit: return "종료"
         case .leaveRoom: return "퇴장"
         case .startGame: return "게임 시작"
         case .showLobby: return "대기실 열기"

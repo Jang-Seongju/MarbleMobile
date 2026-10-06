@@ -88,11 +88,13 @@ public struct SocialState: Equatable, Sendable {
     public var blockedUsers: [SocialUser]
     public var searchResults: [SocialUser]
     public var searchQuery: String
+    public var receiveSettings: ReceiveSettings
 
     public init(
         friends: [SocialUser] = [], incomingRequests: [FriendRequest] = [],
         outgoingRequests: [FriendRequest] = [], blockedUsers: [SocialUser] = [],
-        searchResults: [SocialUser] = [], searchQuery: String = ""
+        searchResults: [SocialUser] = [], searchQuery: String = "",
+        receiveSettings: ReceiveSettings = ReceiveSettings()
     ) {
         self.friends = friends
         self.incomingRequests = incomingRequests
@@ -100,6 +102,7 @@ public struct SocialState: Equatable, Sendable {
         self.blockedUsers = blockedUsers
         self.searchResults = searchResults
         self.searchQuery = searchQuery
+        self.receiveSettings = receiveSettings
     }
 
     public func isFriend(_ userID: Int) -> Bool { friends.contains { $0.userID == userID } }

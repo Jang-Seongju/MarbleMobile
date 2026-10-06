@@ -7,9 +7,8 @@ enum MobileMainMenuContext {
     case gameRoom
 }
 
-/// client(393)의 공통 메뉴 구조를 그대로 표시하고, 모바일에서 아직 이식되지 않은
-/// 기능은 위치를 보존한 채 비활성화한다. 기능을 추가할 때 메뉴를 삽입하지 않고
-/// 기존 command의 enabled/action만 연결하는 것이 원칙이다.
+/// PC 공통 메뉴의 순서와 항목을 이식한다. iOS 앱 종료는 시스템 앱 전환기가
+/// 담당하므로 파일 메뉴의 종료 항목만 제외한다.
 struct MobileMainMenu: View {
     @EnvironmentObject private var model: AppModel
 
@@ -65,8 +64,8 @@ struct MobileMainMenu: View {
             switch command {
             case .login:
                 return loginEnabled && onLogin != nil
-            // iOS에는 PC판의 애플리케이션 종료 명령을 직접 대응시키지 않는다.
-            // 미디어 관리 역시 아직 모바일 UI가 없으므로 골격만 노출한다.
+            case .mediaManagement:
+                return true
             default:
                 return false
             }
@@ -83,6 +82,10 @@ struct MobileMainMenu: View {
                 return model.entryPhase == .active && model.session != nil
             case .participateRoom:
                 return model.canParticipateFromSpectator
+            case .mediaManagement:
+                return true
+            case .receiveSettings:
+                return model.canOpenReceiveSettings
             // 나머지 아직 이식되지 않은 명령은 기존 자리를 보존한다.
             default:
                 return false
@@ -110,6 +113,10 @@ struct MobileMainMenu: View {
                 return model.entryPhase == .active && model.session != nil
             case .roomManagement:
                 return model.canManageRoom
+            case .mediaManagement:
+                return true
+            case .receiveSettings:
+                return model.canOpenReceiveSettings
             default:
                 return false
             }
@@ -146,6 +153,10 @@ struct MobileMainMenu: View {
             model.openMyProfile()
         case .roomManagement:
             model.openRoomManagement()
+        case .mediaManagement:
+            model.utilitySheet = .mediaManagement
+        case .receiveSettings:
+            model.openReceiveSettings()
         case .notes:
             model.openNoteMailbox()
         case .friends:
@@ -154,9 +165,6 @@ struct MobileMainMenu: View {
             model.openRankings()
         case .gameRecords:
             model.openGameRecords()
-        case .exit,
-             .mediaManagement, .receiveSettings:
-            break
         }
     }
 }

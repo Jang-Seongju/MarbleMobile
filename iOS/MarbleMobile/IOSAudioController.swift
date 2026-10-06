@@ -1,6 +1,29 @@
 import AVFoundation
 import Foundation
 
+struct MediaSettings: Equatable {
+    var sfxEnabled: Bool
+    var sfxVolume: Int
+    var bgmEnabled: Bool
+    var bgmVolume: Int
+
+    static func load(from defaults: UserDefaults = .standard) -> MediaSettings {
+        MediaSettings(
+            sfxEnabled: defaults.object(forKey: "marble.media.sfxEnabled") as? Bool ?? true,
+            sfxVolume: min(100, max(0, defaults.object(forKey: "marble.media.sfxVolume") as? Int ?? 70)),
+            bgmEnabled: defaults.object(forKey: "marble.media.bgmEnabled") as? Bool ?? true,
+            bgmVolume: min(100, max(0, defaults.object(forKey: "marble.media.bgmVolume") as? Int ?? 50))
+        )
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(sfxEnabled, forKey: "marble.media.sfxEnabled")
+        defaults.set(sfxVolume, forKey: "marble.media.sfxVolume")
+        defaults.set(bgmEnabled, forKey: "marble.media.bgmEnabled")
+        defaults.set(bgmVolume, forKey: "marble.media.bgmVolume")
+    }
+}
+
 @MainActor
 final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
     enum Role: Hashable { case sfx, voice }
@@ -13,11 +36,41 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
 
     private var active: [ObjectIdentifier: ActivePlayback] = [:]
     private var bgmPlayer: AVAudioPlayer?
+    private var bgmRequest: (clip: String, loop: Bool)?
     private var turnWarningTickPlayer: AVAudioPlayer?
     private var turnWarningVoicePlayer: AVAudioPlayer?
     private var turnWarningZeroPlayer: AVAudioPlayer?
     private var turnWarningZeroCompletion: (() -> Void)?
     private var sessionConfigured = false
+    private(set) var settings = MediaSettings.load()
+
+    func applySettings(_ value: MediaSettings) {
+        let previous = settings
+        settings = MediaSettings(
+            sfxEnabled: value.sfxEnabled,
+            sfxVolume: min(100, max(0, value.sfxVolume)),
+            bgmEnabled: value.bgmEnabled,
+            bgmVolume: min(100, max(0, value.bgmVolume))
+        )
+        settings.save()
+        if !settings.sfxEnabled && previous.sfxEnabled {
+            stopTransient()
+            stopTurnWarningAudio()
+        }
+        let sfxLevel = Float(settings.sfxVolume) / 100
+        for playback in active.values { playback.player.volume = sfxLevel }
+        turnWarningTickPlayer?.volume = sfxLevel
+        turnWarningVoicePlayer?.volume = sfxLevel
+        turnWarningZeroPlayer?.volume = sfxLevel
+        if !settings.bgmEnabled {
+            bgmPlayer?.stop()
+            bgmPlayer = nil
+        } else if !previous.bgmEnabled, let request = bgmRequest {
+            playBGM(request.clip, loop: request.loop)
+        } else {
+            bgmPlayer?.volume = Float(settings.bgmVolume) / 100
+        }
+    }
 
     func configureIfNeeded() {
         guard !sessionConfigured else { return }
@@ -43,6 +96,8 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
     }
 
     func playBGM(_ clip: String, loop: Bool) {
+        bgmRequest = (clip, loop)
+        guard settings.bgmEnabled else { return }
         configureIfNeeded()
         guard let url = resourceURL(for: clip) else { return }
         if let current = bgmPlayer,
@@ -54,6 +109,7 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
         do {
             let player = try AVAudioPlayer(contentsOf: url)
             player.numberOfLoops = loop ? -1 : 0
+            player.volume = Float(settings.bgmVolume) / 100
             player.prepareToPlay()
             player.play()
             bgmPlayer = player
@@ -63,12 +119,13 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
     }
 
     func stopBGM() {
+        bgmRequest = nil
         bgmPlayer?.stop()
         bgmPlayer = nil
     }
 
     func pauseBGM() { bgmPlayer?.pause() }
-    func resumeBGM() { bgmPlayer?.play() }
+    func resumeBGM() { if settings.bgmEnabled { bgmPlayer?.play() } }
 
     func stopVoice() {
         stopActiveRoles([.voice])
@@ -95,12 +152,14 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
 
     @discardableResult
     func startTurnWarningTick(_ clip: String = "ticktock.wav") -> Bool {
+        guard settings.sfxEnabled else { return false }
         configureIfNeeded()
         guard let url = resourceURL(for: clip) else { return false }
         turnWarningTickPlayer?.stop()
         do {
             let player = try AVAudioPlayer(contentsOf: url)
             player.numberOfLoops = -1
+            player.volume = Float(settings.sfxVolume) / 100
             player.prepareToPlay()
             guard player.play() else { return false }
             turnWarningTickPlayer = player
@@ -113,11 +172,13 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
 
     @discardableResult
     func playTurnWarningVoice(_ clip: String) -> Bool {
+        guard settings.sfxEnabled else { return false }
         configureIfNeeded()
         guard let url = resourceURL(for: clip) else { return false }
         turnWarningVoicePlayer?.stop()
         do {
             let player = try AVAudioPlayer(contentsOf: url)
+            player.volume = Float(settings.sfxVolume) / 100
             player.prepareToPlay()
             guard player.play() else { return false }
             turnWarningVoicePlayer = player
@@ -130,6 +191,7 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
 
     @discardableResult
     func playTurnWarningZeroSFX(_ clip: String = "ticktock_0.WAV", completion: @escaping () -> Void) -> Bool {
+        guard settings.sfxEnabled else { return false }
         configureIfNeeded()
         guard let url = resourceURL(for: clip) else { return false }
         turnWarningVoicePlayer?.stop()
@@ -142,6 +204,7 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
         turnWarningZeroCompletion = nil
         do {
             let player = try AVAudioPlayer(contentsOf: url)
+            player.volume = Float(settings.sfxVolume) / 100
             player.delegate = self
             player.prepareToPlay()
             turnWarningZeroPlayer = player
@@ -185,10 +248,12 @@ final class IOSAudioController: NSObject, AVAudioPlayerDelegate {
     }
 
     private func playOneShot(_ clip: String, role: Role, completion: ((Bool) -> Void)?) -> Bool {
+        guard settings.sfxEnabled else { return false }
         configureIfNeeded()
         guard let url = resourceURL(for: clip) else { return false }
         do {
             let player = try AVAudioPlayer(contentsOf: url)
+            player.volume = Float(settings.sfxVolume) / 100
             player.delegate = self
             player.prepareToPlay()
             let key = ObjectIdentifier(player)
