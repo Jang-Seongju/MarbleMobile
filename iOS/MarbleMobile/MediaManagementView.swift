@@ -15,16 +15,7 @@ struct MediaManagementView: View {
                     }
                 ))
 
-                Stepper(value: Binding(
-                    get: { model.mediaSettings.sfxVolume },
-                    set: { value in
-                        var next = model.mediaSettings
-                        next.sfxVolume = value
-                        model.setMediaSettings(next)
-                    }
-                ), in: 0...100) {
-                    Text("효과음 및 음성 볼륨: \(model.mediaSettings.sfxVolume)")
-                }
+                volumeSlider("효과음 및 음성 볼륨", keyPath: \.sfxVolume)
 
                 Toggle("배경음 사용", isOn: Binding(
                     get: { model.mediaSettings.bgmEnabled },
@@ -35,16 +26,7 @@ struct MediaManagementView: View {
                     }
                 ))
 
-                Stepper(value: Binding(
-                    get: { model.mediaSettings.bgmVolume },
-                    set: { value in
-                        var next = model.mediaSettings
-                        next.bgmVolume = value
-                        model.setMediaSettings(next)
-                    }
-                ), in: 0...100) {
-                    Text("배경음 볼륨: \(model.mediaSettings.bgmVolume)")
-                }
+                volumeSlider("배경음 볼륨", keyPath: \.bgmVolume)
             }
             .navigationTitle("미디어 관리")
             .toolbar {
@@ -53,5 +35,36 @@ struct MediaManagementView: View {
                 }
             }
         }
+    }
+
+    private func volumeSlider(
+        _ title: String,
+        keyPath: WritableKeyPath<MediaSettings, Int>
+    ) -> some View {
+        Slider(value: Binding(
+            get: { Double(model.mediaSettings[keyPath: keyPath]) },
+            set: { value in setVolume(Int(value.rounded()), keyPath: keyPath) }
+        ), in: 0...100, step: 1) {
+            Text(title)
+        }
+        .accessibilityValue("\(model.mediaSettings[keyPath: keyPath])퍼센트")
+        .accessibilityHint("위로 쓸면 감소하고 아래로 쓸면 증가합니다.")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: adjustVolume(-1, keyPath: keyPath)
+            case .decrement: adjustVolume(1, keyPath: keyPath)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func setVolume(_ value: Int, keyPath: WritableKeyPath<MediaSettings, Int>) {
+        var next = model.mediaSettings
+        next[keyPath: keyPath] = min(100, max(0, value))
+        if next != model.mediaSettings { model.setMediaSettings(next) }
+    }
+
+    private func adjustVolume(_ amount: Int, keyPath: WritableKeyPath<MediaSettings, Int>) {
+        setVolume(model.mediaSettings[keyPath: keyPath] + amount, keyPath: keyPath)
     }
 }
