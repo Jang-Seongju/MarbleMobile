@@ -20,6 +20,7 @@ struct AIPlayerSelectionSheet: View {
                             get: { model.selectedAIIDs.contains(option.aiID) },
                             set: { model.setAISelected(option.aiID, selected: $0) }
                         ))
+                    .disabled(model.aiSelectionResponseSubmitted)
                     }
                 }
 
@@ -28,12 +29,15 @@ struct AIPlayerSelectionSheet: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(!model.canConfirmAISelection(request))
                     Button("취소", role: .cancel) { model.cancelAISelection() }
+                        .disabled(model.aiSelectionResponseSubmitted)
                 }
             }
             .navigationTitle("AI 플레이어 선택")
             .navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled()
-            .accessibilityAction(.escape) { model.cancelAISelection() }
+            .accessibilityAction(.escape) {
+                if !model.returnToBoardAfterResult() { model.cancelAISelection() }
+            }
         }
     }
 }

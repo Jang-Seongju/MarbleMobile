@@ -12,17 +12,13 @@ struct GameRoomView: View {
     @AccessibilityFocusState private var directTouchExitAccessibilityFocus: Bool
     @AccessibilityFocusState private var lobbyViewAccessibilityFocus: Bool
     @AccessibilityFocusState private var returnToInteractionAccessibilityFocus: Bool
-    @State private var boardAccessibilityFocusRequest = 0
+    @State private var nextBoardAccessibilityFocusRequest = 0
+    @State private var boardAccessibilityFocusRequest: Int?
     @State private var outputFocusReturn: OutputFocusReturn?
 
     private struct OutputFocusReturn {
-        enum Boundary {
-            case aiSelection(UUID)
-            case interaction(String)
-        }
-
         let request: Int
-        let boundary: Boundary
+        let token: UUID
     }
 
     var body: some View {
@@ -46,7 +42,7 @@ struct GameRoomView: View {
                     directTouchAvailable: isInteractionBoardInspectionActive
                         ? model.isBoardReady
                         : model.isBoardDirectTouchAreaAvailable,
-                    accessibilityFocusRequest: boardAccessibilityFocusRequest,
+                    accessibilityFocusRequest: $boardAccessibilityFocusRequest,
                     onAccessibilityFocusRequestPosted: boardFocusReturnWasPosted,
                     directTouchHint: isInteractionBoardInspectionActive
                         ? "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 다이렉트 터치 중 한 손가락 세 번 탭하면 현재 도시 통행료를 조회하고, 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다."
@@ -150,12 +146,32 @@ struct GameRoomView: View {
                 .id(request.requestID)
                 .environmentObject(model)
             }
-            .onChange(of: model.activeInteraction?.requestID) { _, requestID in
+            .onChange(of: model.presentedInteraction?.requestID) { _, requestID in
                 guard let inspectionID = interactionBoardInspectionRequestID else { return }
                 if requestID != inspectionID {
+                    // An inspection already hid the sheet. Preserve this marker
+                    // until the dismissal boundary acknowledges that no modal is up.
+                    if requestID == nil, model.modalOutputReturn.pending?.phase == .dismissing { return }
                     interactionBoardInspectionRequestID = nil
                     focusBoardLookupAfterInspection = false
                     interactionDraft.reset()
+                }
+            }
+            .onChange(of: model.modalOutputReturn.pending?.phase) { _, phase in
+                guard phase == .dismissing, interactionBoardInspectionRequestID != nil,
+                      let token = model.interactionSheetDidDismiss() else { return }
+                interactionBoardInspectionRequestID = nil
+                focusBoardLookupAfterInspection = false
+                interactionDraft.reset()
+                // PC also preserves focus when completion occurs during inspection.
+                model.modalFocusReturnWasPosted(token: token, posted: false)
+            }
+            .onDisappear {
+                // Invalidate a pending UIKit request when this room view goes away.
+                boardAccessibilityFocusRequest = nil
+                if let handoff = outputFocusReturn {
+                    outputFocusReturn = nil
+                    model.modalFocusReturnWasPosted(token: handoff.token, posted: false)
                 }
             }
         }
@@ -168,36 +184,30 @@ struct GameRoomView: View {
             return
         }
 
-        guard let flowID = model.interactionSheetDidDismiss() else { return }
-        requestOutputFocusReturn(.interaction(flowID))
+        guard let token = model.interactionSheetDidDismiss() else { return }
+        requestOutputFocusReturn(token)
     }
 
     private func aiSelectionSheetDidDismiss() {
         guard let token = model.aiSelectionSheetDidDismiss() else { return }
-        requestOutputFocusReturn(.aiSelection(token))
+        requestOutputFocusReturn(token)
     }
 
-    private func requestOutputFocusReturn(_ boundary: OutputFocusReturn.Boundary) {
+    private func requestOutputFocusReturn(_ token: UUID) {
         guard model.isBoardDirectTouchAreaAvailable else {
-            completeOutputFocusReturn(boundary)
+            model.modalFocusReturnWasPosted(token: token, posted: false)
             return
         }
-        let request = boardAccessibilityFocusRequest + 1
-        outputFocusReturn = OutputFocusReturn(request: request, boundary: boundary)
+        nextBoardAccessibilityFocusRequest += 1
+        let request = nextBoardAccessibilityFocusRequest
+        outputFocusReturn = OutputFocusReturn(request: request, token: token)
         boardAccessibilityFocusRequest = request
     }
 
     private func boardFocusReturnWasPosted(_ request: Int) {
         guard let handoff = outputFocusReturn, handoff.request == request else { return }
         outputFocusReturn = nil
-        completeOutputFocusReturn(handoff.boundary)
-    }
-
-    private func completeOutputFocusReturn(_ boundary: OutputFocusReturn.Boundary) {
-        switch boundary {
-        case .aiSelection(let token): model.aiSelectionFocusReturnWasPosted(token: token)
-        case .interaction(let flowID): model.interactionFocusReturnWasPosted(flowID: flowID)
-        }
+        model.modalFocusReturnWasPosted(token: handoff.token, posted: UIAccessibility.isVoiceOverRunning)
     }
 
     private var interactionSheetBinding: Binding<InteractionRequestSnapshot?> {
@@ -205,7 +215,7 @@ struct GameRoomView: View {
             get: {
                 (model.isWorldTravelDestinationSelectionActive || isInteractionBoardInspectionActive)
                     ? nil
-                    : model.activeInteraction
+                    : model.presentedInteraction
             },
             set: { _ in }
         )
@@ -213,7 +223,7 @@ struct GameRoomView: View {
 
     private var isInteractionBoardInspectionActive: Bool {
         guard let requestID = interactionBoardInspectionRequestID,
-              let active = model.activeInteraction
+              let active = model.presentedInteraction
         else { return false }
         return active.requestID == requestID
     }
@@ -409,7 +419,7 @@ struct GameBoardShell: View {
     let cursorIndex: Int
     let currentCellDescription: String
     let directTouchAvailable: Bool
-    let accessibilityFocusRequest: Int
+    @Binding var accessibilityFocusRequest: Int?
     let onAccessibilityFocusRequestPosted: (Int) -> Void
     let directTouchHint: String
     let onExitDirectTouchOverride: (() -> Void)?
@@ -459,7 +469,7 @@ struct GameBoardShell: View {
                         accessibilityLabel: "게임 보드",
                         accessibilityValue: currentCellDescription,
                         accessibilityHint: directTouchHint,
-                        accessibilityFocusRequest: accessibilityFocusRequest,
+                        accessibilityFocusRequest: $accessibilityFocusRequest,
                         onAccessibilityFocusRequestPosted: onAccessibilityFocusRequestPosted,
                         onMoveLeft: onMoveLeft,
                         onMoveRight: onMoveRight,

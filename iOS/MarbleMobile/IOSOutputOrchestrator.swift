@@ -72,6 +72,14 @@ final class IOSOutputOrchestrator {
         startNextIfNeeded()
     }
 
+    /// Explicit navigation skips only the current result, retaining all later
+    /// output and stale-safe automatic boundaries, as PC early board return does.
+    func enqueueUserNavigationBarrier(_ callback: @escaping (@escaping () -> Void) -> Void) {
+        interruptCurrent(retention: .preserveAllPending)
+        pending.insert(.barrier(callback), at: 0)
+        startNextIfNeeded()
+    }
+
     func stopAll() {
         MobileDiagnosticLog.shared.record("OUTPUT", "stopAll pending=\(pending.count) executing=\(isExecuting) generation=\(generation)")
         generation += 1

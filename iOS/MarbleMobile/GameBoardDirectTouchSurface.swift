@@ -7,7 +7,7 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     let accessibilityLabel: String
     let accessibilityValue: String
     let accessibilityHint: String
-    let accessibilityFocusRequest: Int
+    @Binding var accessibilityFocusRequest: Int?
     let onAccessibilityFocusRequestPosted: (Int) -> Void
     let onMoveLeft: () -> Void
     let onMoveRight: () -> Void
@@ -128,7 +128,6 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
 
         var parent: GameBoardDirectTouchSurface
         private var twoFingerWinner: TwoFingerWinner?
-        private var lastAccessibilityFocusRequest = 0
         private let rotorThreshold: CGFloat = .pi / 10
 
         init(parent: GameBoardDirectTouchSurface) {
@@ -140,10 +139,14 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
         }
 
         func applyAccessibilityFocusRequest(to view: DirectTouchBoardView) {
-            let request = parent.accessibilityFocusRequest
-            guard request > 0, request != lastAccessibilityFocusRequest else { return }
-            lastAccessibilityFocusRequest = request
-            view.requestAccessibilityFocusReturn(request) { [weak self] in
+            guard let request = parent.accessibilityFocusRequest else { return }
+            view.requestAccessibilityFocusReturn(request, claim: { [weak self] in
+                guard let self, self.parent.accessibilityFocusRequest == request else { return false }
+                // Consume in shared SwiftUI state BEFORE posting. A replacement
+                // Coordinator sees nil, so it cannot replay a historical request.
+                self.parent.accessibilityFocusRequest = nil
+                return true
+            }) { [weak self] in
                 self?.parent.onAccessibilityFocusRequestPosted(request)
             }
         }
@@ -222,10 +225,10 @@ final class DirectTouchBoardView: UIView {
 
     var callbacks: Callbacks?
     private var lastMagicTapTime: CFTimeInterval = 0
-    private var pendingFocusReturn: (request: Int, completion: () -> Void)?
+    private var pendingFocusReturn: (request: Int, claim: () -> Bool, completion: () -> Void)?
 
-    func requestAccessibilityFocusReturn(_ request: Int, completion: @escaping () -> Void) {
-        pendingFocusReturn = (request, completion)
+    func requestAccessibilityFocusReturn(_ request: Int, claim: @escaping () -> Bool, completion: @escaping () -> Void) {
+        pendingFocusReturn = (request, claim, completion)
         postPendingFocusReturn()
     }
 
@@ -240,14 +243,20 @@ final class DirectTouchBoardView: UIView {
             guard let self, self.window != nil,
                   self.pendingFocusReturn?.request == pending.request else { return }
             self.pendingFocusReturn = nil
+            guard pending.claim() else { return }
             if UIAccessibility.isVoiceOverRunning {
                 UIAccessibility.post(notification: .layoutChanged, argument: self)
             }
             MobileDiagnosticLog.shared.record("FOCUS_RETURN", "board request=\(pending.request) posted voiceOver=\(UIAccessibility.isVoiceOverRunning)")
-            // The announcement released on the following runloop is queued behind
-            // the focus speech. Do not equate a SwiftUI state write with a UIKit post.
+            // Results have already completed before this view is restored. This
+            // callback acknowledges only the post, never focus-speech completion.
             DispatchQueue.main.async(execute: pending.completion)
         }
+    }
+
+    override func accessibilityElementDidBecomeFocused() {
+        super.accessibilityElementDidBecomeFocused()
+        MobileDiagnosticLog.shared.record("FOCUS_EVENT", "board became_focused")
     }
 
     override func accessibilityPerformMagicTap() -> Bool {

@@ -100,7 +100,9 @@ struct GameInteractionSheet: View {
             )
         }
         .accessibilityAction(.escape) {
-            if request.cancellable {
+            if model.returnToBoardAfterResult() {
+                // Server completion revoked this request; escape is navigation.
+            } else if request.cancellable {
                 model.cancelActiveInteraction()
             } else {
                 model.announce("취소할 수 없습니다.")

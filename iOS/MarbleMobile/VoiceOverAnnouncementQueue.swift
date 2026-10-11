@@ -28,8 +28,9 @@ final class VoiceOverAnnouncementQueue {
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
-    /// A modal's focus return is posted before releasing its output barrier. The
-    /// first announcement must then wait for VoiceOver's own focus speech.
+    /// Results finish before a modal closes. Its first FOLLOWING announcement
+    /// can queue behind existing focus speech; this flag does not establish
+    /// completion of UIKit's transition or protect the already-finished result.
     func waitForFocusSpeechBeforeNextAnnouncement() {
         queueNextAnnouncementBehindCurrentSpeech = true
     }
