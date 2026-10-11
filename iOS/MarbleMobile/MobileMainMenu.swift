@@ -39,7 +39,7 @@ struct MobileMainMenu: View {
             Button(receiveNotificationTitle) {
                 model.presentReceiveNotifications()
             }
-            .disabled(context == .login || model.session == nil)
+            .disabled(context == .login || !model.canOpenReceiveNotifications)
             Button("진단 로그 저장") {
                 model.saveDiagnosticLog()
             }

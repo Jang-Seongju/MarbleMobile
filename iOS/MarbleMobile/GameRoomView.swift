@@ -96,6 +96,12 @@ struct GameRoomView: View {
             .padding(.bottom, 8)
             .navigationTitle(roomTitle)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ReceiveNotificationButton()
+                        .environmentObject(model)
+                }
+            }
             .alert("알림", isPresented: Binding(
                 get: { model.alertMessage != nil },
                 set: { if !$0 { model.alertMessage = nil } }

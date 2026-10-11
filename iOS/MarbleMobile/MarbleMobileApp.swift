@@ -39,7 +39,7 @@ struct RootView: View {
             model.setApplicationSceneActive(newPhase == .active)
             updateIdleTimer(for: newPhase)
         }
-        .sheet(item: $model.utilitySheet) { sheet in
+        .sheet(item: $model.utilitySheet, onDismiss: model.utilitySheetDidDismiss) { sheet in
             Group {
                 switch sheet {
                 case .mediaManagement:

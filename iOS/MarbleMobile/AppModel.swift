@@ -79,6 +79,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var unseenPrivateMessageUserIDs: Set<Int> = []
     @Published private(set) var notes: [NoteSnapshot] = []
     @Published var utilitySheet: UtilitySheet?
+    @Published private(set) var receiveNotificationFocusReturnID = UUID()
+    private var receiveNotificationReturnContext: (screen: Screen, roomID: Int?)?
     @Published var mediaSettings = MediaSettings.load()
     @Published private(set) var isReceiveSettingsPending = false
     @Published var activePrivateMessageUserID: Int?
@@ -322,8 +324,35 @@ final class AppModel: ObservableObject {
     var isNoteMailboxPresented: Bool { utilitySheet == .noteMailbox }
     var isFriendManagementPresented: Bool { utilitySheet == .friendManagement }
 
-    func presentReceiveNotifications() {
+    var canOpenReceiveNotifications: Bool {
+        entryPhase == .active && session != nil && socket.hasActiveConnection
+            && (screen == .lobby || screen == .gameRoom)
+            && utilitySheet == nil
+            && presentedInteraction == nil && pendingInteractionActivation == nil
+            && aiSelectionRequest == nil && modalOutputReturn.pending == nil
+            && !isRoomEntryRecoveryPending && !isSpectatorParticipationPending
+    }
+
+    func presentReceiveNotifications(returnToButton: Bool = false) {
+        guard canOpenReceiveNotifications else { return }
+        receiveNotificationReturnContext = returnToButton ? (screen, currentRoomID) : nil
         utilitySheet = .receiveNotifications
+    }
+
+    func utilitySheetDidDismiss() {
+        // Selecting a notification category replaces this sheet with its detail.
+        // Restore focus only after that entire, manually opened path is closed.
+        guard utilitySheet == nil else { return }
+        let returnContext = receiveNotificationReturnContext
+        receiveNotificationReturnContext = nil
+        guard let returnContext, returnContext.screen == screen,
+              returnContext.roomID == currentRoomID, appSceneActive,
+              canOpenReceiveNotifications,
+              alertMessage == nil, informationDocument == nil,
+              !isPresentingRoomManagement, !isPresentingCreateRoom,
+              pendingRoomJoin == nil, pendingSpectatorTargetList == nil,
+              pendingSpectatorPasswordTarget == nil else { return }
+        receiveNotificationFocusReturnID = UUID()
     }
 
     func saveDiagnosticLog() {

@@ -39,6 +39,8 @@ struct LobbyView: View {
                         selectedLobbyRoom: selectedLobbyRoom
                     )
                     .environmentObject(model)
+                    ReceiveNotificationButton()
+                        .environmentObject(model)
                 }
             }
             .sheet(isPresented: Binding(
