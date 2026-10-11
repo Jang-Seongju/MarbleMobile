@@ -117,7 +117,9 @@ struct GameRoomView: View {
             }
             .onAppear {
                 if model.isSpectating {
-                    DispatchQueue.main.async { boardAccessibilityFocusRequest &+= 1 }
+                    DispatchQueue.main.async {
+                        boardAccessibilityFocusRequest = allocateBoardAccessibilityFocusRequest()
+                    }
                 } else if !model.hasJoinedTeam {
                     DispatchQueue.main.async { teamNameAccessibilityFocus = true }
                 }
@@ -198,10 +200,14 @@ struct GameRoomView: View {
             model.modalFocusReturnWasPosted(token: token, posted: false)
             return
         }
-        nextBoardAccessibilityFocusRequest += 1
-        let request = nextBoardAccessibilityFocusRequest
+        let request = allocateBoardAccessibilityFocusRequest()
         outputFocusReturn = OutputFocusReturn(request: request, token: token)
         boardAccessibilityFocusRequest = request
+    }
+
+    private func allocateBoardAccessibilityFocusRequest() -> Int {
+        nextBoardAccessibilityFocusRequest += 1
+        return nextBoardAccessibilityFocusRequest
     }
 
     private func boardFocusReturnWasPosted(_ request: Int) {
