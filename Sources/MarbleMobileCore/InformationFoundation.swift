@@ -518,7 +518,8 @@ public enum InteractionRequestPresenter {
         _ request: InteractionRequestSnapshot,
         cityInformation: [Int: InformationInfo],
         myPlayerID: Int?,
-        playerNicknames: [Int: String] = [:]
+        playerNicknames: [Int: String] = [:],
+        ownedMarble: Int? = nil
     ) -> String {
         func city(_ cityID: Int?, owned: Bool = false) -> String? {
             guard let cityID, let info = cityInformation[cityID] else { return nil }
@@ -531,18 +532,23 @@ public enum InteractionRequestPresenter {
             return text.isEmpty ? nil : text
         }
 
+        func withOwnedMarble(_ description: String) -> String {
+            guard let ownedMarble else { return description }
+            return "\(description)\n보유 마블: \(marble(ownedMarble))"
+        }
+
         switch request.missionType {
         case "purchase_city":
-            guard let info = city(request.cityID) else { return request.description }
-            return "\(info). 구매하시겠습니까? 비용: \(marble(request.cost))"
+            guard let info = city(request.cityID) else { return withOwnedMarble(request.description) }
+            return withOwnedMarble("\(info). 구매하시겠습니까? 비용: \(marble(request.cost))")
 
         case "build_multiple":
             guard let info = city(request.cityID, owned: true) else { return request.description }
             return "\(info). 건설할 건물을 선택하세요."
 
         case "acquire_city":
-            guard let info = city(request.cityID) else { return request.description }
-            return "\(info). 인수하시겠습니까? 인수 비용: \(marble(request.cost))"
+            guard let info = city(request.cityID) else { return withOwnedMarble(request.description) }
+            return withOwnedMarble("\(info). 인수하시겠습니까? 인수 비용: \(marble(request.cost))")
 
         case "liquidation":
             return request.description
@@ -568,13 +574,15 @@ public enum InteractionRequestPresenter {
         _ request: InteractionRequestSnapshot,
         cityInformation: [Int: InformationInfo],
         myPlayerID: Int?,
-        playerNicknames: [Int: String] = [:]
+        playerNicknames: [Int: String] = [:],
+        ownedMarble: Int? = nil
     ) -> String {
         let description = description(
             request,
             cityInformation: cityInformation,
             myPlayerID: myPlayerID,
-            playerNicknames: playerNicknames
+            playerNicknames: playerNicknames,
+            ownedMarble: ownedMarble
         )
         if request.missionType == "liquidation" {
             let money = liquidationMarbleInfo(request, selectedSellValue: 0)

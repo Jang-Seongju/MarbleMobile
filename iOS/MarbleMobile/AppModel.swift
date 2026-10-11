@@ -78,7 +78,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var privateConversations: [Int: PrivateConversation] = [:]
     @Published private(set) var unseenPrivateMessageUserIDs: Set<Int> = []
     @Published private(set) var notes: [NoteSnapshot] = []
-    @Published var utilitySheet: UtilitySheet?
+    @Published var utilitySheet: UtilitySheet? {
+        didSet {
+            // End the conversation at the sheet binding's close boundary, not
+            // in onDisappear: a new message may arrive during dismissal.
+            guard oldValue == .privateMessages, utilitySheet != .privateMessages else { return }
+            if let userID = activePrivateMessageUserID {
+                closePrivateConversation(userID: userID)
+            }
+            preferredPrivateMessageUserID = nil
+        }
+    }
     @Published private(set) var receiveNotificationFocusReturnID = UUID()
     private var receiveNotificationReturnContext: (screen: Screen, roomID: Int?)?
     @Published var mediaSettings = MediaSettings.load()
@@ -463,8 +473,14 @@ final class AppModel: ObservableObject {
     }
 
     func activatePrivateConversation(userID: Int) {
+        guard utilitySheet == .privateMessages, privateConversations[userID] != nil else { return }
         unseenPrivateMessageUserIDs.remove(userID)
         activePrivateMessageUserID = userID
+    }
+
+    func dismissPrivateMessages() {
+        guard utilitySheet == .privateMessages else { return }
+        utilitySheet = nil
     }
 
     func closePrivateConversation(userID: Int) {
@@ -475,10 +491,9 @@ final class AppModel: ObservableObject {
 
     func sendPrivateMessage(userID: Int, nickname: String, text: String) {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else { return }
-        if privateConversations[userID] == nil {
-            privateConversations[userID] = .init(userID: userID, nickname: nickname, lines: [])
-        }
+        guard !message.isEmpty, entryPhase == .active, socket.hasActiveConnection,
+              utilitySheet == .privateMessages, activePrivateMessageUserID == userID,
+              privateConversations[userID] != nil else { return }
         socket.send(WireMessages.privateChat(targetUserID: userID, message: message))
     }
 
@@ -1762,7 +1777,8 @@ final class AppModel: ObservableObject {
             request,
             cityInformation: cityInformation,
             myPlayerID: myPlayerID,
-            playerNicknames: playerNicknames
+            playerNicknames: playerNicknames,
+            ownedMarble: localGamePlayer?.marble
         )
     }
 
@@ -3188,9 +3204,10 @@ final class AppModel: ObservableObject {
     }
 
     private func handlePrivateChatSent(_ data: [String: Any]) {
-        guard let event = ReceivePayloadParser.privateChatSent(data) else { return }
-        var conversation = privateConversations[event.userID]
-            ?? PrivateConversation(userID: event.userID, nickname: event.nickname, lines: [])
+        // Match PC _on_chat_sent: an acknowledgement must not recreate a
+        // conversation whose window has already been closed.
+        guard let event = ReceivePayloadParser.privateChatSent(data),
+              var conversation = privateConversations[event.userID] else { return }
         conversation.nickname = event.nickname
         conversation.lines.append(.init(
             speaker: session?.identity.nickname ?? "당신",
@@ -3997,6 +4014,9 @@ final class AppModel: ObservableObject {
         )
         guard screen != .login, session != nil else { return }
 
+        receiveNotificationReturnContext = nil
+        clearPrivateMessageState()
+
         isReceiveSettingsPending = false
         if utilitySheet == .receiveSettings { utilitySheet = nil }
 
@@ -4127,9 +4147,17 @@ final class AppModel: ObservableObject {
         clearRoomState()
     }
 
-    private func clearReceiveCommunicationState() {
+    private func clearPrivateMessageState() {
         privateConversations.removeAll()
         unseenPrivateMessageUserIDs.removeAll()
+        activePrivateMessageUserID = nil
+        preferredPrivateMessageUserID = nil
+        if utilitySheet == .privateMessages { utilitySheet = nil }
+    }
+
+    private func clearReceiveCommunicationState() {
+        receiveNotificationReturnContext = nil
+        clearPrivateMessageState()
         notes.removeAll()
         notifiedNoteIDs.removeAll()
         notifiedFriendRequestIDs.removeAll()
@@ -4138,8 +4166,6 @@ final class AppModel: ObservableObject {
         recalledNoteIDs.removeAll()
         readSentNoteIDs.removeAll()
         utilitySheet = nil
-        activePrivateMessageUserID = nil
-        preferredPrivateMessageUserID = nil
         preferredNoteUserID = nil
         preferredFriendRequestID = nil
         noteRecipientSearchResults.removeAll()

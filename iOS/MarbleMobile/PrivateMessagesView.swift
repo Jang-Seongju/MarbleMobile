@@ -32,7 +32,7 @@ struct PrivateMessagesView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("닫기") { model.utilitySheet = nil }
+                    Button("닫기") { model.dismissPrivateMessages() }
                 }
             }
             .onAppear {
@@ -42,6 +42,7 @@ struct PrivateMessagesView: View {
                 }
             }
         }
+        .accessibilityAction(.escape) { model.dismissPrivateMessages() }
     }
 }
 
@@ -72,7 +73,7 @@ private struct PrivateConversationView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("뒤로") { model.utilitySheet = nil }
+                Button("뒤로") { model.dismissPrivateMessages() }
             }
         }
         .onAppear {
@@ -80,9 +81,7 @@ private struct PrivateConversationView: View {
                 model.activatePrivateConversation(userID: userID)
             }
         }
-        .onDisappear {
-            if model.activePrivateMessageUserID == userID { model.activePrivateMessageUserID = nil }
-        }
+        .accessibilityAction(.escape) { model.dismissPrivateMessages() }
     }
 
     private func send() {
