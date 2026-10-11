@@ -166,6 +166,7 @@ final class AppModel: ObservableObject {
         let flowID: String
         var completion: (() -> Void)?
         var releaseRequested: Bool
+        var waitForFocusSpeech = false
     }
 
     private var aiSelectionHistory: [String] = []
@@ -173,6 +174,13 @@ final class AppModel: ObservableObject {
     private var pendingInteractionActivation: InteractionRequestSnapshot?
     private var pendingInteractionResultGate: InteractionResultGate?
     private var completedInteractionFlowAwaitingDismiss: String?
+    private var completedInteractionFlowAwaitingFocusReturn: String?
+    private struct AISelectionDismissGate {
+        let token: UUID
+        var completion: (() -> Void)?
+        var releaseRequested = false
+    }
+    private var aiSelectionDismissGate: AISelectionDismissGate?
     private var pendingRotorDirections: [String: [Bool]] = [:]
     private var pendingPlayerPositionTargetIDs: [Int] = []
     private var aiRemainderTextOnly = false
@@ -1688,8 +1696,9 @@ final class AppModel: ObservableObject {
             return
         }
         let selected = request.availableAI.map(\.aiID).filter { selectedAIIDs.contains($0) }
+        armAISelectionDismissGate()
         socket.send(WireMessages.gameStartAISelectionResponse(requestID: request.requestID, selectedAIIDs: selected))
-        clearAISelection()
+        clearAISelection(preserveDismissGate: true)
         isGameStartPending = true
     }
 
@@ -1700,10 +1709,57 @@ final class AppModel: ObservableObject {
         isGameStartPending = false
     }
 
-    private func clearAISelection() {
+    private func clearAISelection(preserveDismissGate: Bool = false) {
+        if !preserveDismissGate { releaseAISelectionDismissGateImmediately() }
         aiSelectionRequest = nil
         selectedAIIDs = []
         aiSelectionHistory = []
+    }
+
+    private func armAISelectionDismissGate() {
+        releaseAISelectionDismissGateImmediately()
+        let token = UUID()
+        aiSelectionDismissGate = AISelectionDismissGate(token: token, completion: nil)
+        MobileDiagnosticLog.shared.record("OUTPUT_HANDOFF", "ai_selection armed token=\(token)")
+        output.enqueueAsyncBarrier { [weak self] completion in
+            guard let self, var gate = self.aiSelectionDismissGate, gate.token == token else {
+                completion()
+                return
+            }
+            if gate.releaseRequested {
+                self.aiSelectionDismissGate = nil
+                self.output.waitForAccessibilityFocusSpeechBeforeNextTTS()
+                completion()
+            } else {
+                gate.completion = completion
+                self.aiSelectionDismissGate = gate
+            }
+        }
+    }
+
+    func aiSelectionSheetDidDismiss() -> UUID? {
+        guard let gate = aiSelectionDismissGate else { return nil }
+        MobileDiagnosticLog.shared.record("OUTPUT_HANDOFF", "ai_selection dismissed token=\(gate.token)")
+        return gate.token
+    }
+
+    func aiSelectionFocusReturnWasPosted(token: UUID) {
+        guard var gate = aiSelectionDismissGate, gate.token == token else { return }
+        MobileDiagnosticLog.shared.record("OUTPUT_HANDOFF", "ai_selection focus_return token=\(token)")
+        if let completion = gate.completion {
+            aiSelectionDismissGate = nil
+            output.waitForAccessibilityFocusSpeechBeforeNextTTS()
+            completion()
+        } else {
+            gate.releaseRequested = true
+            aiSelectionDismissGate = gate
+        }
+    }
+
+    private func releaseAISelectionDismissGateImmediately() {
+        guard let gate = aiSelectionDismissGate else { return }
+        aiSelectionDismissGate = nil
+        gate.completion?()
     }
 
     func interactionDescription(_ request: InteractionRequestSnapshot) -> String {
@@ -1946,7 +2002,9 @@ final class AppModel: ObservableObject {
             turnCommandWindowOpen = false
             turnActionStarted = false
             isGameStartPending = false
-            clearAISelection()
+            // game_started may arrive while the AI sheet is still dismissing.
+            // Preserve its presentation barrier until UIKit posts the focus return.
+            clearAISelection(preserveDismissGate: true)
             clearInteractionPresentationGates()
             activeInteraction = nil
             interactionResponseSubmitted = false
@@ -2155,9 +2213,18 @@ final class AppModel: ObservableObject {
             currentTurnGeneration = nil
             gameIsActive = false
             gameFinished = true
-            clearInteractionPresentationGates()
-            activeInteraction = nil
-            interactionResponseSubmitted = false
+            if let current = activeInteraction, current.interactionType != "select_destination" {
+                pendingInteractionActivation = nil
+                if pendingInteractionResultGate == nil {
+                    armInteractionResultGate(for: current)
+                }
+                closeInteractionForFocusReturn(flowID: current.flowID)
+            } else if completedInteractionFlowAwaitingDismiss == nil,
+                      completedInteractionFlowAwaitingFocusReturn == nil {
+                clearInteractionPresentationGates()
+                activeInteraction = nil
+                interactionResponseSubmitted = false
+            }
         } else if type == "roll_dice_rejected" {
             if let playerID = WireScalarParser.exactInt(payload["player_id"]),
                myPlayerID != nil, playerID != myPlayerID { return }
@@ -2362,6 +2429,10 @@ final class AppModel: ObservableObject {
         guard let current = activeInteraction else {
             interactionResponseSubmitted = false
             activatedInteractionRequestIDs.removeAll()
+            // Duplicate completion, or game_over following the same final response,
+            // must not release a modal's results ahead of its pending focus return.
+            if completedInteractionFlowAwaitingDismiss == flowID
+                || completedInteractionFlowAwaitingFocusReturn == flowID { return }
             requestInteractionResultGateRelease(flowID: flowID)
             return
         }
@@ -2377,10 +2448,13 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // CLOSE boundary: remove the modal immediately. Any server result emitted after
-        // the local response is already waiting behind the result gate, so it cannot be
-        // cut off by the sheet's VoiceOver focus transition. onDismiss releases only
-        // that narrow gate; TURN_STARTED and later output then continue in wire order.
+        closeInteractionForFocusReturn(flowID: flowID)
+    }
+
+    private func closeInteractionForFocusReturn(flowID: String) {
+        // CLOSE boundary: keep results gated through both modal dismissal and the
+        // board's UIKit focus return. A SwiftUI onDismiss alone is too early: it can
+        // start result TTS before the separately scheduled layoutChanged notification.
         completedInteractionFlowAwaitingDismiss = flowID
         activeInteraction = nil
         interactionResponseSubmitted = false
@@ -2388,10 +2462,19 @@ final class AppModel: ObservableObject {
         scheduleInteractionDismissFallback(flowID: flowID)
     }
 
-    func interactionSheetDidDismiss() {
-        guard let flowID = completedInteractionFlowAwaitingDismiss else { return }
+    func interactionSheetDidDismiss() -> String? {
+        guard let flowID = completedInteractionFlowAwaitingDismiss else { return nil }
         completedInteractionFlowAwaitingDismiss = nil
-        requestInteractionResultGateRelease(flowID: flowID)
+        completedInteractionFlowAwaitingFocusReturn = flowID
+        MobileDiagnosticLog.shared.record("OUTPUT_HANDOFF", "interaction dismissed flow=\(flowID)")
+        return flowID
+    }
+
+    func interactionFocusReturnWasPosted(flowID: String) {
+        guard completedInteractionFlowAwaitingFocusReturn == flowID else { return }
+        completedInteractionFlowAwaitingFocusReturn = nil
+        MobileDiagnosticLog.shared.record("OUTPUT_HANDOFF", "interaction focus_return flow=\(flowID)")
+        requestInteractionResultGateRelease(flowID: flowID, afterFocusReturn: true)
     }
 
     private func armInteractionResultGate(for request: InteractionRequestSnapshot) {
@@ -2415,6 +2498,9 @@ final class AppModel: ObservableObject {
             }
             if gate.releaseRequested {
                 self.pendingInteractionResultGate = nil
+                if gate.waitForFocusSpeech {
+                    self.output.waitForAccessibilityFocusSpeechBeforeNextTTS()
+                }
                 completion()
                 return
             }
@@ -2423,13 +2509,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func requestInteractionResultGateRelease(flowID: String) {
+    private func requestInteractionResultGateRelease(flowID: String, afterFocusReturn: Bool = false) {
         guard var gate = pendingInteractionResultGate, gate.flowID == flowID else { return }
         if let completion = gate.completion {
             pendingInteractionResultGate = nil
+            if afterFocusReturn { output.waitForAccessibilityFocusSpeechBeforeNextTTS() }
             completion()
         } else {
             gate.releaseRequested = true
+            gate.waitForFocusSpeech = afterFocusReturn
             pendingInteractionResultGate = gate
         }
     }
@@ -2443,14 +2531,18 @@ final class AppModel: ObservableObject {
     private func scheduleInteractionDismissFallback(flowID: String) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self, self.completedInteractionFlowAwaitingDismiss == flowID else { return }
+            // Existing fail-open safeguard for a missing sheet callback. Normal
+            // output release is driven by the actual UIKit focus-return callback.
+            MobileDiagnosticLog.shared.record("OUTPUT_HANDOFF", "interaction dismiss_callback_missing flow=\(flowID)")
             self.completedInteractionFlowAwaitingDismiss = nil
-            self.requestInteractionResultGateRelease(flowID: flowID)
+            self.requestInteractionResultGateRelease(flowID: flowID, afterFocusReturn: true)
         }
     }
 
     private func clearInteractionPresentationGates() {
         pendingInteractionActivation = nil
         completedInteractionFlowAwaitingDismiss = nil
+        completedInteractionFlowAwaitingFocusReturn = nil
         releaseInteractionResultGateImmediately()
     }
 

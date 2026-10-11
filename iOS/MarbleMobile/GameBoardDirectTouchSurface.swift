@@ -8,6 +8,7 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
     let accessibilityValue: String
     let accessibilityHint: String
     let accessibilityFocusRequest: Int
+    let onAccessibilityFocusRequestPosted: (Int) -> Void
     let onMoveLeft: () -> Void
     let onMoveRight: () -> Void
     let onMoveUp: () -> Void
@@ -142,9 +143,8 @@ struct GameBoardDirectTouchSurface: UIViewRepresentable {
             let request = parent.accessibilityFocusRequest
             guard request > 0, request != lastAccessibilityFocusRequest else { return }
             lastAccessibilityFocusRequest = request
-            DispatchQueue.main.async { [weak view] in
-                guard let view else { return }
-                UIAccessibility.post(notification: .layoutChanged, argument: view)
+            view.requestAccessibilityFocusReturn(request) { [weak self] in
+                self?.parent.onAccessibilityFocusRequestPosted(request)
             }
         }
 
@@ -222,6 +222,33 @@ final class DirectTouchBoardView: UIView {
 
     var callbacks: Callbacks?
     private var lastMagicTapTime: CFTimeInterval = 0
+    private var pendingFocusReturn: (request: Int, completion: () -> Void)?
+
+    func requestAccessibilityFocusReturn(_ request: Int, completion: @escaping () -> Void) {
+        pendingFocusReturn = (request, completion)
+        postPendingFocusReturn()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        postPendingFocusReturn()
+    }
+
+    private func postPendingFocusReturn() {
+        guard window != nil, let pending = pendingFocusReturn else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil,
+                  self.pendingFocusReturn?.request == pending.request else { return }
+            self.pendingFocusReturn = nil
+            if UIAccessibility.isVoiceOverRunning {
+                UIAccessibility.post(notification: .layoutChanged, argument: self)
+            }
+            MobileDiagnosticLog.shared.record("FOCUS_RETURN", "board request=\(pending.request) posted voiceOver=\(UIAccessibility.isVoiceOverRunning)")
+            // The announcement released on the following runloop is queued behind
+            // the focus speech. Do not equate a SwiftUI state write with a UIKit post.
+            DispatchQueue.main.async(execute: pending.completion)
+        }
+    }
 
     override func accessibilityPerformMagicTap() -> Bool {
         performMagicTapOnce()

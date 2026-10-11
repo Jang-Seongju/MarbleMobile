@@ -102,6 +102,10 @@ final class IOSOutputOrchestrator {
 
     func stopBGM() { audio.stopBGM() }
 
+    func waitForAccessibilityFocusSpeechBeforeNextTTS() {
+        voiceOver.waitForFocusSpeechBeforeNextAnnouncement()
+    }
+
     @discardableResult
     func setFutureGameplayAudioSuppressed(_ suppressed: Bool) -> Bool {
         futureGameplayAudioSuppressed = suppressed

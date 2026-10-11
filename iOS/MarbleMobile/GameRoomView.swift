@@ -13,6 +13,17 @@ struct GameRoomView: View {
     @AccessibilityFocusState private var lobbyViewAccessibilityFocus: Bool
     @AccessibilityFocusState private var returnToInteractionAccessibilityFocus: Bool
     @State private var boardAccessibilityFocusRequest = 0
+    @State private var outputFocusReturn: OutputFocusReturn?
+
+    private struct OutputFocusReturn {
+        enum Boundary {
+            case aiSelection(UUID)
+            case interaction(String)
+        }
+
+        let request: Int
+        let boundary: Boundary
+    }
 
     var body: some View {
         NavigationStack {
@@ -36,6 +47,7 @@ struct GameRoomView: View {
                         ? model.isBoardReady
                         : model.isBoardDirectTouchAreaAvailable,
                     accessibilityFocusRequest: boardAccessibilityFocusRequest,
+                    onAccessibilityFocusRequestPosted: boardFocusReturnWasPosted,
                     directTouchHint: isInteractionBoardInspectionActive
                         ? "두 번 탭하여 다이렉트 터치를 활성화합니다. 보드 조회 중에는 읽기 전용 정보 제스처만 사용할 수 있습니다. 다이렉트 터치 중 한 손가락 세 번 탭하면 현재 도시 통행료를 조회하고, 두 번 탭하면 표준 VoiceOver로 전환하여 인터렉션으로 돌아가기 버튼으로 이동합니다."
                         : "두 번 탭하여 다이렉트 터치를 활성화할 수 있습니다. 다이렉트 터치 중 한 손가락 세 번 탭하면 현재 도시 통행료를 조회하고, 두 번 탭하면 표준 VoiceOver로 전환합니다.",
@@ -119,7 +131,7 @@ struct GameRoomView: View {
                     DispatchQueue.main.async { teamNameAccessibilityFocus = true }
                 }
             }
-            .sheet(item: $model.aiSelectionRequest) { request in
+            .sheet(item: $model.aiSelectionRequest, onDismiss: aiSelectionSheetDidDismiss) { request in
                 AIPlayerSelectionSheet(request: request)
                     .environmentObject(model)
             }
@@ -156,12 +168,35 @@ struct GameRoomView: View {
             return
         }
 
-        // Restore only the normal interaction-completion hand-off to the board.
-        // Keep the sync2 message scrolling path untouched and use layoutChanged,
-        // not screenChanged, for the explicit board focus request.
-        DispatchQueue.main.async {
-            boardAccessibilityFocusRequest &+= 1
-            model.interactionSheetDidDismiss()
+        guard let flowID = model.interactionSheetDidDismiss() else { return }
+        requestOutputFocusReturn(.interaction(flowID))
+    }
+
+    private func aiSelectionSheetDidDismiss() {
+        guard let token = model.aiSelectionSheetDidDismiss() else { return }
+        requestOutputFocusReturn(.aiSelection(token))
+    }
+
+    private func requestOutputFocusReturn(_ boundary: OutputFocusReturn.Boundary) {
+        guard model.isBoardDirectTouchAreaAvailable else {
+            completeOutputFocusReturn(boundary)
+            return
+        }
+        let request = boardAccessibilityFocusRequest + 1
+        outputFocusReturn = OutputFocusReturn(request: request, boundary: boundary)
+        boardAccessibilityFocusRequest = request
+    }
+
+    private func boardFocusReturnWasPosted(_ request: Int) {
+        guard let handoff = outputFocusReturn, handoff.request == request else { return }
+        outputFocusReturn = nil
+        completeOutputFocusReturn(handoff.boundary)
+    }
+
+    private func completeOutputFocusReturn(_ boundary: OutputFocusReturn.Boundary) {
+        switch boundary {
+        case .aiSelection(let token): model.aiSelectionFocusReturnWasPosted(token: token)
+        case .interaction(let flowID): model.interactionFocusReturnWasPosted(flowID: flowID)
         }
     }
 
@@ -375,6 +410,7 @@ struct GameBoardShell: View {
     let currentCellDescription: String
     let directTouchAvailable: Bool
     let accessibilityFocusRequest: Int
+    let onAccessibilityFocusRequestPosted: (Int) -> Void
     let directTouchHint: String
     let onExitDirectTouchOverride: (() -> Void)?
     let onMoveLeft: () -> Void
@@ -424,6 +460,7 @@ struct GameBoardShell: View {
                         accessibilityValue: currentCellDescription,
                         accessibilityHint: directTouchHint,
                         accessibilityFocusRequest: accessibilityFocusRequest,
+                        onAccessibilityFocusRequestPosted: onAccessibilityFocusRequestPosted,
                         onMoveLeft: onMoveLeft,
                         onMoveRight: onMoveRight,
                         onMoveUp: onMoveUp,
